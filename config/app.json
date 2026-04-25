@@ -1,0 +1,16 @@
+{
+  "default_db": "general",
+  "discord": {
+    "enabled": true,
+    "prefix": "!",
+    "mention_reply": true
+  },
+  "http": {
+    "enabled": true,
+    "host": "0.0.0.0",
+    "port": 8000
+  },
+  "slack": {
+    "enabled": true
+  }
+}

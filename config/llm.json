@@ -1,0 +1,11 @@
+{
+  "provider": "ollama",
+  "base_url": "http://localhost:11434",
+  "model": "llama3",
+  "api_key": "",
+  "timeout": 60,
+  "options": {
+    "temperature": 0.7,
+    "num_ctx": 4096
+  }
+}

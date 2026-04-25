@@ -1,0 +1,10 @@
+{
+  "name": "general",
+  "system_prompt": "あなたは親切で知識豊富なアシスタントです。日本語で丁寧に回答してください。",
+  "style": "friendly",
+  "memory_policy": {
+    "auto_save": true,
+    "max_context_messages": 20
+  },
+  "allowed_tools": []
+}
