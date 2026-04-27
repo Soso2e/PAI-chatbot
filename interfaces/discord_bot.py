@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from core import chat_controller
@@ -9,11 +10,26 @@ from core.db_registry import get_guild_db
 
 _PREFIX = "!"
 APP_CONFIG_PATH = Path(__file__).parent.parent / "config" / "app.json"
+LLM_CONFIG_PATH = Path(__file__).parent.parent / "config" / "llm.json"
 
 intents = discord.Intents.default()
 intents.message_content = True
 
 bot = commands.Bot(command_prefix=_PREFIX, intents=intents)
+_slash_synced = False
+
+
+def _load_app_config() -> dict:
+    try:
+        with open(APP_CONFIG_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _load_llm_config() -> dict:
+    with open(LLM_CONFIG_PATH, encoding="utf-8") as f:
+        return json.load(f)
 
 
 def _session(channel_id: int) -> str:
@@ -21,11 +37,7 @@ def _session(channel_id: int) -> str:
 
 
 def _default_db() -> str:
-    try:
-        with open(APP_CONFIG_PATH, encoding="utf-8") as f:
-            return json.load(f).get("default_db", "general")
-    except Exception:
-        return "general"
+    return _load_app_config().get("default_db", "general")
 
 
 def _db(guild_id: int | None) -> str:
@@ -34,8 +46,59 @@ def _db(guild_id: int | None) -> str:
     return get_guild_db(guild_id) or _default_db()
 
 
+def _require_guild(interaction: discord.Interaction) -> bool:
+    return interaction.guild is not None and interaction.channel is not None
+
+
+def _has_manage_guild(interaction: discord.Interaction) -> bool:
+    permissions = getattr(interaction.user, "guild_permissions", None)
+    return bool(permissions and permissions.manage_guild)
+
+
+async def _send_permission_error(interaction: discord.Interaction) -> None:
+    await interaction.response.send_message(
+        "You need the `Manage Server` permission to use this command.",
+        ephemeral=True,
+    )
+
+
+def _status_embed(guild_id: int | None) -> discord.Embed:
+    db_name = _db(guild_id)
+    llm = _load_llm_config()
+    embed = discord.Embed(title="PAI-Chatbot Status", color=0x5865F2)
+    embed.add_field(name="DB", value=f"`{db_name}`", inline=True)
+    embed.add_field(name="LLM Provider", value=f"`{llm['provider']}`", inline=True)
+    embed.add_field(name="Model", value=f"`{llm['model']}`", inline=True)
+    embed.add_field(name="Endpoint", value=f"`{llm['base_url']}`", inline=False)
+    return embed
+
+
+async def _sync_slash_commands() -> None:
+    global _slash_synced
+    if _slash_synced:
+        return
+
+    cfg = _load_app_config().get("discord", {})
+    guild_id = cfg.get("guild_id") or cfg.get("dev_guild_id")
+    if guild_id:
+        guild = discord.Object(id=int(guild_id))
+        bot.tree.copy_global_to(guild=guild)
+        synced = await bot.tree.sync(guild=guild)
+        print(f"[Discord] Synced {len(synced)} slash commands to guild {guild_id}")
+    else:
+        synced = await bot.tree.sync()
+        print(f"[Discord] Synced {len(synced)} global slash commands")
+
+    _slash_synced = True
+
+
+db_group = app_commands.Group(name="db", description="Manage the memory database for this Discord server")
+memory_group = app_commands.Group(name="memory", description="Manage long-term memories for this Discord server")
+
+
 @bot.event
 async def on_ready():
+    await _sync_slash_commands()
     print(f"[Discord] Logged in as {bot.user} (id={bot.user.id})")
 
 
@@ -73,97 +136,162 @@ async def cmd_chat(ctx: commands.Context, *, text: str):
     await ctx.reply(reply)
 
 
-@bot.command(name="db")
-async def cmd_db(ctx: commands.Context, action: str = "", name: str = "", password: str = ""):
-    current = _db(ctx.guild.id if ctx.guild else None)
-
-    if action in ("", "list"):
-        dbs = chat_controller.available_dbs()
-        lines = [f"{'*' if d == current else '-'} `{d}`" for d in dbs]
-        await ctx.send("**Available DBs**\n" + "\n".join(lines))
-        return
-
-    if action == "current":
-        await ctx.send(f"This server is using `{current}`.")
-        return
-
-    if ctx.guild is None:
-        await ctx.send("This command can only be used inside a Discord server.")
-        return
-
-    if action == "create":
-        if not name or not password:
-            await ctx.send("Usage: `!db create <db_name> <password>`")
-            return
-        try:
-            chat_controller.create_db(name, password, ctx.guild.id)
-        except ValueError as exc:
-            await ctx.send(str(exc))
-            return
-        await ctx.send(f"Created DB `{name}` and bound it to this server.")
-        return
-
-    if action == "use":
-        if not name or not password:
-            await ctx.send("Usage: `!db use <db_name> <password>`")
-            return
-        try:
-            chat_controller.switch_guild_db(ctx.guild.id, name, password)
-        except ValueError as exc:
-            await ctx.send(str(exc))
-            return
-        await ctx.send(f"This server now uses `{name}`.")
-        return
-
-    await ctx.send("Usage: `!db list`, `!db current`, `!db create <db_name> <password>`, `!db use <db_name> <password>`")
-
-
-@bot.command(name="memory")
-async def cmd_memory(ctx: commands.Context, sub: str = "", *, text: str = ""):
-    db_name = _db(ctx.guild.id if ctx.guild else None)
-
-    if sub == "clear":
-        n = chat_controller.clear_session(db_name, _session(ctx.channel.id))
-        await ctx.send(f"Cleared chat history for this channel. Deleted {n} messages.")
-        return
-
-    if sub == "save":
-        if not text.strip():
-            await ctx.send("Usage: `!memory save <text>`")
-            return
-        memory_id = chat_controller.remember(
-            db_name,
-            text.strip(),
-            author_id=str(ctx.author.id),
-            source="discord_manual",
-        )
-        await ctx.send(f"Saved memory #{memory_id} to `{db_name}`.")
-        return
-
-    if sub == "list":
-        items = chat_controller.recent_memories(db_name, limit=5)
-        if not items:
-            await ctx.send("No saved memories yet.")
-            return
-        lines = [f"`#{item['id']}` {item['content']}" for item in items]
-        await ctx.send("**Recent memories**\n" + "\n".join(lines))
-        return
-
-    await ctx.send("Usage: `!memory clear`, `!memory save <text>`, `!memory list`")
-
-
 @bot.command(name="status")
 async def cmd_status(ctx: commands.Context):
-    db_name = _db(ctx.guild.id if ctx.guild else None)
-    llm_cfg_path = Path(__file__).parent.parent / "config" / "llm.json"
-    with open(llm_cfg_path, encoding="utf-8") as f:
-        llm = json.load(f)
-    embed = discord.Embed(title="PAI-Chatbot Status", color=0x5865F2)
-    embed.add_field(name="DB", value=f"`{db_name}`", inline=True)
-    embed.add_field(name="LLM Provider", value=f"`{llm['provider']}`", inline=True)
-    embed.add_field(name="Model", value=f"`{llm['model']}`", inline=True)
-    embed.add_field(name="Endpoint", value=f"`{llm['base_url']}`", inline=False)
-    await ctx.send(embed=embed)
+    await ctx.send(embed=_status_embed(ctx.guild.id if ctx.guild else None))
+
+
+@bot.tree.command(name="chat", description="Chat with the bot in the current channel")
+@app_commands.describe(text="The message you want the bot to answer")
+async def slash_chat(interaction: discord.Interaction, text: str):
+    if interaction.channel is None:
+        await interaction.response.send_message("This command can only be used in a channel.", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    reply = await chat_controller.process(
+        text,
+        _session(interaction.channel.id),
+        _db(interaction.guild.id if interaction.guild else None),
+    )
+    await interaction.followup.send(reply)
+
+
+@bot.tree.command(name="status", description="Show the current DB and model settings")
+async def slash_status(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        embed=_status_embed(interaction.guild.id if interaction.guild else None),
+        ephemeral=True,
+    )
+
+
+@db_group.command(name="list", description="Show the databases that can be used by this bot")
+async def db_list(interaction: discord.Interaction):
+    current = _db(interaction.guild.id if interaction.guild else None)
+    dbs = chat_controller.available_dbs()
+    lines = [f"{'*' if d == current else '-'} `{d}`" for d in dbs]
+    content = "**Available DBs**\n" + "\n".join(lines) if lines else "No DBs are available yet."
+    await interaction.response.send_message(content, ephemeral=True)
+
+
+@db_group.command(name="current", description="Show which DB this Discord server is using")
+async def db_current(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        f"This server is using `{_db(interaction.guild.id if interaction.guild else None)}`.",
+        ephemeral=True,
+    )
+
+
+@db_group.command(name="create", description="Create a new memory DB and bind it to this Discord server")
+@app_commands.describe(
+    db_name="Name of the DB to create. Use letters, numbers, '_' or '-'",
+    password="Password required later when switching this server to the DB",
+)
+async def db_create(interaction: discord.Interaction, db_name: str, password: str):
+    if not _require_guild(interaction):
+        await interaction.response.send_message("This command can only be used inside a Discord server.", ephemeral=True)
+        return
+    if not _has_manage_guild(interaction):
+        await _send_permission_error(interaction)
+        return
+
+    try:
+        chat_controller.create_db(db_name, password, interaction.guild.id)
+    except ValueError as exc:
+        await interaction.response.send_message(str(exc), ephemeral=True)
+        return
+
+    await interaction.response.send_message(
+        f"Created DB `{db_name}` and bound it to this server.",
+        ephemeral=True,
+    )
+
+
+@db_group.command(name="use", description="Switch this Discord server to an existing memory DB")
+@app_commands.describe(
+    db_name="Name of the DB to use for this server",
+    password="Password for the target DB",
+)
+async def db_use(interaction: discord.Interaction, db_name: str, password: str):
+    if not _require_guild(interaction):
+        await interaction.response.send_message("This command can only be used inside a Discord server.", ephemeral=True)
+        return
+    if not _has_manage_guild(interaction):
+        await _send_permission_error(interaction)
+        return
+
+    try:
+        chat_controller.switch_guild_db(interaction.guild.id, db_name, password)
+    except ValueError as exc:
+        await interaction.response.send_message(str(exc), ephemeral=True)
+        return
+
+    await interaction.response.send_message(
+        f"This server now uses `{db_name}`.",
+        ephemeral=True,
+    )
+
+
+@memory_group.command(name="save", description="Save a long-term memory into this server's DB")
+@app_commands.describe(text="The memory content you want the bot to remember")
+async def memory_save(interaction: discord.Interaction, text: str):
+    if not _require_guild(interaction):
+        await interaction.response.send_message("This command can only be used inside a Discord server.", ephemeral=True)
+        return
+    if not text.strip():
+        await interaction.response.send_message("Please enter some text to save.", ephemeral=True)
+        return
+
+    db_name = _db(interaction.guild.id)
+    memory_id = chat_controller.remember(
+        db_name,
+        text.strip(),
+        author_id=str(interaction.user.id),
+        source="discord_manual",
+    )
+    await interaction.response.send_message(
+        f"Saved memory #{memory_id} to `{db_name}`.",
+        ephemeral=True,
+    )
+
+
+@memory_group.command(name="list", description="Show recent long-term memories saved for this server")
+async def memory_list(interaction: discord.Interaction):
+    if not _require_guild(interaction):
+        await interaction.response.send_message("This command can only be used inside a Discord server.", ephemeral=True)
+        return
+
+    db_name = _db(interaction.guild.id)
+    items = chat_controller.recent_memories(db_name, limit=5)
+    if not items:
+        await interaction.response.send_message("No saved memories yet.", ephemeral=True)
+        return
+
+    lines = [f"`#{item['id']}` {item['content']}" for item in items]
+    await interaction.response.send_message(
+        "**Recent memories**\n" + "\n".join(lines),
+        ephemeral=True,
+    )
+
+
+@memory_group.command(name="clear", description="Clear the chat history for the current channel")
+async def memory_clear(interaction: discord.Interaction):
+    if not _require_guild(interaction):
+        await interaction.response.send_message("This command can only be used inside a Discord server.", ephemeral=True)
+        return
+
+    deleted = chat_controller.clear_session(
+        _db(interaction.guild.id),
+        _session(interaction.channel.id),
+    )
+    await interaction.response.send_message(
+        f"Cleared chat history for this channel. Deleted {deleted} messages.",
+        ephemeral=True,
+    )
+
+
+bot.tree.add_command(db_group)
+bot.tree.add_command(memory_group)
 
 
 def run(token: str):
