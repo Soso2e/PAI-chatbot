@@ -361,14 +361,14 @@ async def memory_list(interaction: discord.Interaction):
     )
 
 
-@memory_group.command(name="capture", description="Capture durable memories from recent messages in this channel")
-@app_commands.describe(limit="How many recent messages to inspect (10-100)")
+@memory_group.command(name="capture", description="このチャンネルの最近のメッセージから長期記憶を抽出して保存する")
+@app_commands.describe(limit="調査する最近のメッセージ数（10〜100）")
 async def memory_capture(interaction: discord.Interaction, limit: app_commands.Range[int, 10, 100] = 40):
     if not _require_guild(interaction):
-        await interaction.response.send_message("This command can only be used inside a Discord server.", ephemeral=True)
+        await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
         return
     if interaction.channel is None:
-        await interaction.response.send_message("This command can only be used in a channel.", ephemeral=True)
+        await interaction.response.send_message("このコマンドはチャンネル内でのみ使用できます。", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True, thinking=True)
@@ -390,7 +390,7 @@ async def memory_capture(interaction: discord.Interaction, limit: app_commands.R
     )
 
 
-@memory_group.command(name="clear", description="Clear the chat history for the current channel")
+@memory_group.command(name="clear", description="現在のチャンネルのチャット履歴を消去する")
 async def memory_clear(interaction: discord.Interaction):
     if not _require_guild(interaction):
         await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
