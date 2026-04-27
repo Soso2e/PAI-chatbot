@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+databases/*/memory.sqlite
+databases/*/*.sqlite
+databases/*/*.sqlite-journal
+databases/*/memory.json
+databases/*/vector_db/
+config/discord_state.json
+*.egg-info/
+.DS_Store
