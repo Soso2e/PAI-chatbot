@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from core.memory_manager import get_history
+from core.memory_manager import find_relevant_memories, get_history
 
 DB_BASE = Path(__file__).parent.parent / "databases"
 
@@ -19,8 +19,17 @@ def build_messages(db_name: str, session_id: str, user_input: str) -> list[dict]
     max_ctx = cfg.get("memory_policy", {}).get("max_context_messages", 20)
 
     history = get_history(db_name, session_id, limit=max_ctx)
+    memories = find_relevant_memories(db_name, user_input, limit=5)
 
     messages = [{"role": "system", "content": system_prompt}]
+    if memories:
+        memory_lines = "\n".join(f"- {memory['content']}" for memory in memories)
+        messages.append(
+            {
+                "role": "system",
+                "content": "Relevant long-term memories:\n" + memory_lines,
+            }
+        )
     messages.extend(history)
     messages.append({"role": "user", "content": user_input})
     return messages
