@@ -11,6 +11,13 @@ from core.db_registry import get_guild_db
 _PREFIX = "!"
 APP_CONFIG_PATH = Path(__file__).parent.parent / "config" / "app.json"
 LLM_CONFIG_PATH = Path(__file__).parent.parent / "config" / "llm.json"
+_MEMORY_TRIGGER_PHRASES = (
+    "覚えておいて",
+    "覚えといて",
+    "remember this",
+    "remember that",
+    "save this to memory",
+)
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -44,6 +51,45 @@ def _db(guild_id: int | None) -> str:
     if guild_id is None:
         return _default_db()
     return get_guild_db(guild_id) or _default_db()
+
+
+def _should_capture_memory(text: str) -> bool:
+    lowered = text.lower()
+    return any(phrase in text or phrase in lowered for phrase in _MEMORY_TRIGGER_PHRASES)
+
+
+async def _build_history_lines(
+    channel: discord.abc.Messageable,
+    limit: int = 40,
+) -> list[str]:
+    if not hasattr(channel, "history"):
+        return []
+
+    rows: list[str] = []
+    async for item in channel.history(limit=limit, oldest_first=False):
+        author = getattr(item.author, "display_name", None) or getattr(item.author, "name", "unknown")
+        content = (item.content or "").strip()
+        if not content:
+            continue
+        rows.append(f"[{item.author.id}|{author}]: {content}")
+    rows.reverse()
+    return rows
+
+
+async def _capture_channel_memories(
+    channel: discord.abc.Messageable,
+    guild_id: int | None,
+    author_id: str,
+    source: str = "discord_capture",
+    limit: int = 40,
+) -> list[dict]:
+    history_lines = await _build_history_lines(channel, limit=limit)
+    return await chat_controller.capture_memories_from_history(
+        _db(guild_id),
+        history_lines,
+        author_id=author_id,
+        source=source,
+    )
 
 
 def _require_guild(interaction: discord.Interaction) -> bool:
@@ -119,6 +165,20 @@ async def on_message(message: discord.Message):
                     _session(message.channel.id),
                     _db(message.guild.id if message.guild else None),
                 )
+                saved = []
+                if _should_capture_memory(text):
+                    saved = await _capture_channel_memories(
+                        message.channel,
+                        message.guild.id if message.guild else None,
+                        str(message.author.id),
+                        source="discord_auto",
+                    )
+                    if saved:
+                        reply += "\n\n長期記憶に保存しました:\n" + "\n".join(
+                            f"- #{item['id']} {item['content']}" for item in saved
+                        )
+                    else:
+                        reply += "\n\n確認しましたが、長期記憶として残す内容は見つかりませんでした。"
             await message.reply(reply)
             return
 
@@ -133,6 +193,20 @@ async def cmd_chat(ctx: commands.Context, *, text: str):
             _session(ctx.channel.id),
             _db(ctx.guild.id if ctx.guild else None),
         )
+        saved = []
+        if _should_capture_memory(text):
+            saved = await _capture_channel_memories(
+                ctx.channel,
+                ctx.guild.id if ctx.guild else None,
+                str(ctx.author.id),
+                source="discord_auto",
+            )
+            if saved:
+                reply += "\n\n長期記憶に保存しました:\n" + "\n".join(
+                    f"- #{item['id']} {item['content']}" for item in saved
+                )
+            else:
+                reply += "\n\n確認しましたが、長期記憶として残す内容は見つかりませんでした。"
     await ctx.reply(reply)
 
 
@@ -154,6 +228,19 @@ async def slash_chat(interaction: discord.Interaction, text: str):
         _session(interaction.channel.id),
         _db(interaction.guild.id if interaction.guild else None),
     )
+    if _should_capture_memory(text):
+        saved = await _capture_channel_memories(
+            interaction.channel,
+            interaction.guild.id if interaction.guild else None,
+            str(interaction.user.id),
+            source="discord_auto",
+        )
+        if saved:
+            reply += "\n\n長期記憶に保存しました:\n" + "\n".join(
+                f"- #{item['id']} {item['content']}" for item in saved
+            )
+        else:
+            reply += "\n\n確認しましたが、長期記憶として残す内容は見つかりませんでした。"
     await interaction.followup.send(reply)
 
 
@@ -274,7 +361,36 @@ async def memory_list(interaction: discord.Interaction):
     )
 
 
-@memory_group.command(name="clear", description="現在のチャンネルのチャット履歴を消去する")
+@memory_group.command(name="capture", description="Capture durable memories from recent messages in this channel")
+@app_commands.describe(limit="How many recent messages to inspect (10-100)")
+async def memory_capture(interaction: discord.Interaction, limit: app_commands.Range[int, 10, 100] = 40):
+    if not _require_guild(interaction):
+        await interaction.response.send_message("This command can only be used inside a Discord server.", ephemeral=True)
+        return
+    if interaction.channel is None:
+        await interaction.response.send_message("This command can only be used in a channel.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    saved = await _capture_channel_memories(
+        interaction.channel,
+        interaction.guild.id,
+        str(interaction.user.id),
+        source="discord_manual_capture",
+        limit=limit,
+    )
+    if not saved:
+        await interaction.followup.send("保存候補は見つかりませんでした。", ephemeral=True)
+        return
+
+    lines = [f"`#{item['id']}` {item['content']}" for item in saved]
+    await interaction.followup.send(
+        "長期記憶に保存しました:\n" + "\n".join(lines),
+        ephemeral=True,
+    )
+
+
+@memory_group.command(name="clear", description="Clear the chat history for the current channel")
 async def memory_clear(interaction: discord.Interaction):
     if not _require_guild(interaction):
         await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
