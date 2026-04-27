@@ -71,7 +71,7 @@ async def _build_history_lines(
         content = (item.content or "").strip()
         if not content:
             continue
-        rows.append(f"{author}: {content}")
+        rows.append(f"[{item.author.id}|{author}]: {content}")
     rows.reverse()
     return rows
 

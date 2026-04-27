@@ -16,6 +16,11 @@ from core.memory_manager import (
 _llm = LLMClient()
 _DB_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{3,32}$")
 _MEMORY_JSON_RE = re.compile(r"\[[\s\S]*\]")
+_HISTORY_LINE_RE = re.compile(r"^\[(?P<user_id>\d+)\|(?P<name>[^\]]+)\]:\s*(?P<content>.+)$")
+_SELF_NAME_PATTERNS = [
+    re.compile(r"(?:ぼく|僕|おれ|俺|わたし|私)[はって]?\s*(?P<alias>[^\s。、「」]+?)\s*(?:っていう|って言う|です|だよ|だ|といいます|と言います)"),
+    re.compile(r"(?P<alias>[^\s。、「」]+?)\s*(?:って呼んで|ってよんで|と呼んで|でいいよ)"),
+]
 
 
 def _db_dir(db_name: str) -> Path:
@@ -96,6 +101,31 @@ def _normalize_memory_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+def _extract_rule_based_memories(history_lines: list[str]) -> list[str]:
+    memories: list[str] = []
+
+    for line in history_lines:
+        match = _HISTORY_LINE_RE.match(line.strip())
+        if not match:
+            continue
+
+        user_id = match.group("user_id")
+        content = match.group("content").strip()
+        for pattern in _SELF_NAME_PATTERNS:
+            alias_match = pattern.search(content)
+            if not alias_match:
+                continue
+            alias = _normalize_memory_text(alias_match.group("alias"))
+            alias = alias.strip("。、「」\"'")
+            if len(alias) > 24:
+                continue
+            if alias:
+                memories.append(f"{user_id}: {alias}")
+                break
+
+    return memories[:5]
+
+
 async def process(
     message: str,
     session_id: str,
@@ -119,9 +149,10 @@ async def capture_memories_from_history(
     if not cleaned_lines:
         return []
 
+    rule_based_candidates = _extract_rule_based_memories(cleaned_lines)
     history_text = "\n".join(cleaned_lines[-120:])
     raw = await _llm.chat(_memory_extraction_messages(history_text))
-    candidates = _parse_memory_candidates(raw)
+    candidates = rule_based_candidates + _parse_memory_candidates(raw)
     if not candidates:
         return []
 
