@@ -185,6 +185,69 @@ def save_memory(db_name: str, content: str, author_id: str = "", source: str = "
     return next_id
 
 
+def update_memory(
+    db_name: str,
+    memory_id: int,
+    content: str,
+    author_id: str | None = None,
+    source: str | None = None,
+) -> bool:
+    init_db(db_name)
+    if _sqlite_available(db_name):
+        with _connect(db_name) as conn:
+            current = conn.execute(
+                "SELECT author_id, source FROM memory_entries WHERE id = ?",
+                (memory_id,),
+            ).fetchone()
+            if current is None:
+                return False
+            cur = conn.execute(
+                """
+                UPDATE memory_entries
+                SET content = ?, author_id = ?, source = ?
+                WHERE id = ?
+                """,
+                (
+                    content,
+                    current["author_id"] if author_id is None else author_id,
+                    current["source"] if source is None else source,
+                    memory_id,
+                ),
+            )
+            return cur.rowcount > 0
+
+    store = _load_store(db_name)
+    for item in store["memory_entries"]:
+        if item["id"] != memory_id:
+            continue
+        item["content"] = content
+        if author_id is not None:
+            item["author_id"] = author_id
+        if source is not None:
+            item["source"] = source
+        _save_store(db_name, store)
+        return True
+    return False
+
+
+def delete_memory(db_name: str, memory_id: int) -> bool:
+    init_db(db_name)
+    if _sqlite_available(db_name):
+        with _connect(db_name) as conn:
+            cur = conn.execute("DELETE FROM memory_entries WHERE id = ?", (memory_id,))
+            return cur.rowcount > 0
+
+    store = _load_store(db_name)
+    before = len(store["memory_entries"])
+    store["memory_entries"] = [
+        item for item in store["memory_entries"] if item["id"] != memory_id
+    ]
+    if len(store["memory_entries"]) == before:
+        return False
+    _save_store(db_name, store)
+    return True
+
+
 def list_memories(db_name: str, limit: int = 10) -> list[dict]:
     init_db(db_name)
     if _sqlite_available(db_name):
@@ -203,6 +266,24 @@ def list_memories(db_name: str, limit: int = 10) -> list[dict]:
     memories = list(_load_store(db_name)["memory_entries"])
     memories.sort(key=lambda item: (item["created_at"], item["id"]), reverse=True)
     return memories[:limit]
+
+
+def list_all_memories(db_name: str) -> list[dict]:
+    init_db(db_name)
+    if _sqlite_available(db_name):
+        with _connect(db_name) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, content, author_id, source, created_at
+                FROM memory_entries
+                ORDER BY id ASC
+                """
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    memories = list(_load_store(db_name)["memory_entries"])
+    memories.sort(key=lambda item: item["id"])
+    return memories
 
 
 def find_relevant_memories(db_name: str, query: str, limit: int = 5) -> list[dict]:

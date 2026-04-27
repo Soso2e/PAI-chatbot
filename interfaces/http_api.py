@@ -1,7 +1,9 @@
 import os
-from fastapi import FastAPI, HTTPException, Security, Depends
+
+from fastapi import Depends, FastAPI, HTTPException, Security
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
+
 from core import chat_controller
 
 app = FastAPI(title="PAI-Chatbot HTTP API")
@@ -12,12 +14,10 @@ _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 def _verify_key(key: str = Security(_api_key_header)):
     expected = os.getenv("HTTP_API_KEY", "")
     if not expected:
-        return  # 認証未設定なら全許可（開発用）
+        return
     if key != expected:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
-
-# ── Schemas ──────────────────────────────────────────────────────────────────
 
 class ChatRequest(BaseModel):
     message: str
@@ -37,7 +37,10 @@ class SwitchRequest(BaseModel):
     db_name: str
 
 
-# ── Endpoints ────────────────────────────────────────────────────────────────
+class OrganizeMemoryRequest(BaseModel):
+    db_name: str = "general"
+    min_entries: int = 5
+
 
 @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(_verify_key)])
 async def chat(req: ChatRequest):
@@ -59,10 +62,21 @@ async def db_switch(req: SwitchRequest):
     return {"session_id": req.session_id, "db_name": req.db_name}
 
 
+@app.post("/memory/organize", dependencies=[Depends(_verify_key)])
+async def organize_memory(req: OrganizeMemoryRequest):
+    if req.db_name not in chat_controller.available_dbs():
+        raise HTTPException(status_code=400, detail=f"DB '{req.db_name}' not found")
+    return await chat_controller.organize_memories(
+        req.db_name,
+        min_entries=max(1, req.min_entries),
+    )
+
+
 @app.get("/status", dependencies=[Depends(_verify_key)])
 async def status():
     import json
     from pathlib import Path
+
     llm_path = Path(__file__).parent.parent / "config" / "llm.json"
     with open(llm_path, encoding="utf-8") as f:
         llm = json.load(f)

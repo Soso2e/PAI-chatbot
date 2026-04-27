@@ -7,15 +7,19 @@ from core.db_registry import bind_guild_db, register_db, verify_db_password
 from core.llm_client import LLMClient
 from core.memory_manager import (
     clear_history,
+    delete_memory,
     init_db,
+    list_all_memories,
     list_memories,
     save_memory,
     save_message,
+    update_memory,
 )
 
 _llm = LLMClient()
 _DB_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{3,32}$")
 _MEMORY_JSON_RE = re.compile(r"\[[\s\S]*\]")
+_OBJECT_JSON_RE = re.compile(r"\{[\s\S]*\}")
 _HISTORY_LINE_RE = re.compile(r"^\[(?P<user_id>\d+)\|(?P<name>[^\]]+)\]:\s*(?P<content>.+)$")
 _SELF_NAME_PATTERNS = [
     re.compile(r"(?:ぼく|僕|おれ|俺|わたし|私)[はって]?\s*(?P<alias>[^\s。、「」]+?)\s*(?:っていう|って言う|です|だよ|だ|といいます|と言います)"),
@@ -60,6 +64,50 @@ def _memory_extraction_messages(history_text: str) -> list[dict]:
     ]
 
 
+def _memory_organization_messages(db_name: str, memories: list[dict]) -> list[dict]:
+    items = [
+        {
+            "id": item["id"],
+            "content": item["content"],
+            "author_id": item.get("author_id", ""),
+            "source": item.get("source", ""),
+        }
+        for item in memories
+    ]
+    prompt = (
+        "You organize a long-term memory database.\n"
+        "Return JSON only.\n"
+        "Output schema:\n"
+        "{\n"
+        '  "operations": [\n'
+        "    {\n"
+        '      "action": "keep|add|update|delete",\n'
+        '      "id": 1,\n'
+        '      "content": "normalized memory text",\n'
+        '      "reason": "short reason"\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        "Rules:\n"
+        f"- Database name: {db_name}\n"
+        "- Consolidate duplicates and near-duplicates.\n"
+        "- Normalize wording into short standalone Japanese sentences.\n"
+        "- Keep durable facts, preferences, constraints, recurring workflows, project context, and promises.\n"
+        "- Delete stale, trivial, contradictory, or redundant memories when a better canonical memory exists.\n"
+        "- Use update when an existing item should be rewritten.\n"
+        "- Use add only when an important canonical memory is missing from the list.\n"
+        "- Never invent facts not supported by the provided memory list.\n"
+        "- If nothing should change, return {\"operations\": []}.\n"
+    )
+    return [
+        {"role": "system", "content": prompt},
+        {
+            "role": "user",
+            "content": json.dumps({"memories": items}, ensure_ascii=False, indent=2),
+        },
+    ]
+
+
 def _parse_memory_candidates(raw_text: str) -> list[str]:
     text = raw_text.strip()
     candidates: list[str] = []
@@ -95,6 +143,45 @@ def _parse_memory_candidates(raw_text: str) -> list[str]:
         if cleaned:
             candidates.append(cleaned)
     return candidates[:5]
+
+
+def _parse_memory_organization_ops(raw_text: str) -> list[dict]:
+    text = raw_text.strip()
+    data = None
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        match = _OBJECT_JSON_RE.search(text)
+        if match:
+            try:
+                data = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                data = None
+
+    if not isinstance(data, dict):
+        return []
+
+    operations = data.get("operations")
+    if not isinstance(operations, list):
+        return []
+
+    parsed: list[dict] = []
+    for item in operations:
+        if not isinstance(item, dict):
+            continue
+        action = str(item.get("action", "")).strip().lower()
+        if action not in {"keep", "add", "update", "delete"}:
+            continue
+        parsed.append(
+            {
+                "action": action,
+                "id": item.get("id"),
+                "content": str(item.get("content", "")).strip(),
+                "reason": str(item.get("reason", "")).strip(),
+            }
+        )
+    return parsed
 
 
 def _normalize_memory_text(value: str) -> str:
@@ -181,7 +268,128 @@ async def capture_memories_from_history(
                 "source": source,
             }
         )
+    if saved:
+        await auto_organize_memories(db_name)
     return saved
+
+
+def _organization_enabled(db_name: str) -> bool:
+    cfg_path = _db_dir(db_name) / "config.json"
+    if not cfg_path.exists():
+        return True
+    try:
+        with open(cfg_path, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception:
+        return True
+
+    policy = cfg.get("memory_policy", {})
+    return bool(policy.get("auto_organize", True))
+
+
+async def organize_memories(
+    db_name: str,
+    *,
+    min_entries: int = 5,
+    source: str = "memory_organizer",
+) -> dict:
+    init_db(db_name)
+    memories = list_all_memories(db_name)
+    if len(memories) < min_entries:
+        return {"applied": False, "reason": "not_enough_memories", "stats": {"total": len(memories)}}
+
+    raw = await _llm.chat(_memory_organization_messages(db_name, memories))
+    operations = _parse_memory_organization_ops(raw)
+    if not operations:
+        return {"applied": False, "reason": "no_operations", "stats": {"total": len(memories)}}
+
+    by_id = {item["id"]: item for item in list_all_memories(db_name)}
+    existing_texts = {
+        _normalize_memory_text(item["content"]).lower()
+        for item in by_id.values()
+    }
+    stats = {"kept": 0, "added": 0, "updated": 0, "deleted": 0, "skipped": 0}
+
+    for op in operations:
+        action = op["action"]
+        memory_id = op["id"]
+        normalized = _normalize_memory_text(op["content"])
+
+        if action == "keep":
+            stats["kept"] += 1
+            continue
+
+        if action == "add":
+            if not normalized:
+                stats["skipped"] += 1
+                continue
+            key = normalized.lower()
+            if key in existing_texts:
+                stats["skipped"] += 1
+                continue
+            new_id = save_memory(db_name, normalized, source=source)
+            by_id[new_id] = {"id": new_id, "content": normalized}
+            existing_texts.add(key)
+            stats["added"] += 1
+            continue
+
+        if not isinstance(memory_id, int) or memory_id not in by_id:
+            stats["skipped"] += 1
+            continue
+
+        if action == "delete":
+            deleted = delete_memory(db_name, memory_id)
+            if deleted:
+                old_key = _normalize_memory_text(by_id[memory_id]["content"]).lower()
+                existing_texts.discard(old_key)
+                del by_id[memory_id]
+                stats["deleted"] += 1
+            else:
+                stats["skipped"] += 1
+            continue
+
+        if action == "update":
+            if not normalized:
+                stats["skipped"] += 1
+                continue
+            current_key = _normalize_memory_text(by_id[memory_id]["content"]).lower()
+            next_key = normalized.lower()
+            if next_key != current_key and next_key in existing_texts:
+                deleted = delete_memory(db_name, memory_id)
+                if deleted:
+                    existing_texts.discard(current_key)
+                    del by_id[memory_id]
+                    stats["deleted"] += 1
+                else:
+                    stats["skipped"] += 1
+                continue
+            updated = update_memory(db_name, memory_id, normalized, source=source)
+            if updated:
+                existing_texts.discard(current_key)
+                existing_texts.add(next_key)
+                by_id[memory_id]["content"] = normalized
+                stats["updated"] += 1
+            else:
+                stats["skipped"] += 1
+
+    changed = stats["added"] > 0 or stats["updated"] > 0 or stats["deleted"] > 0
+    return {
+        "applied": changed,
+        "reason": "updated" if changed else "no_effective_changes",
+        "stats": stats,
+        "total_after": len(list_all_memories(db_name)),
+    }
+
+
+async def auto_organize_memories(
+    db_name: str,
+    *,
+    min_entries: int = 5,
+    source: str = "memory_auto_organizer",
+) -> dict:
+    if not _organization_enabled(db_name):
+        return {"applied": False, "reason": "disabled"}
+    return await organize_memories(db_name, min_entries=min_entries, source=source)
 
 
 def clear_session(db_name: str, session_id: str) -> int:
@@ -219,6 +427,17 @@ def switch_guild_db(guild_id: int, db_name: str, password: str) -> None:
 
 def remember(db_name: str, content: str, author_id: str = "", source: str = "manual") -> int:
     return save_memory(db_name, content, author_id=author_id, source=source)
+
+
+async def remember_and_organize(
+    db_name: str,
+    content: str,
+    author_id: str = "",
+    source: str = "manual",
+) -> dict:
+    memory_id = save_memory(db_name, content, author_id=author_id, source=source)
+    organization = await auto_organize_memories(db_name)
+    return {"id": memory_id, "organization": organization}
 
 
 def recent_memories(db_name: str, limit: int = 10) -> list[dict]:
