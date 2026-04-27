@@ -103,7 +103,7 @@ def _has_manage_guild(interaction: discord.Interaction) -> bool:
 
 async def _send_permission_error(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(
-        "You need the `Manage Server` permission to use this command.",
+        "このコマンドを使用するには`サーバーの管理`権限が必要です。",
         ephemeral=True,
     )
 
@@ -111,11 +111,11 @@ async def _send_permission_error(interaction: discord.Interaction) -> None:
 def _status_embed(guild_id: int | None) -> discord.Embed:
     db_name = _db(guild_id)
     llm = _load_llm_config()
-    embed = discord.Embed(title="PAI-Chatbot Status", color=0x5865F2)
+    embed = discord.Embed(title="PAI-Chatbot ステータス", color=0x5865F2)
     embed.add_field(name="DB", value=f"`{db_name}`", inline=True)
-    embed.add_field(name="LLM Provider", value=f"`{llm['provider']}`", inline=True)
-    embed.add_field(name="Model", value=f"`{llm['model']}`", inline=True)
-    embed.add_field(name="Endpoint", value=f"`{llm['base_url']}`", inline=False)
+    embed.add_field(name="LLMプロバイダー", value=f"`{llm['provider']}`", inline=True)
+    embed.add_field(name="モデル", value=f"`{llm['model']}`", inline=True)
+    embed.add_field(name="エンドポイント", value=f"`{llm['base_url']}`", inline=False)
     return embed
 
 
@@ -138,8 +138,8 @@ async def _sync_slash_commands() -> None:
     _slash_synced = True
 
 
-db_group = app_commands.Group(name="db", description="Manage the memory database for this Discord server")
-memory_group = app_commands.Group(name="memory", description="Manage long-term memories for this Discord server")
+db_group = app_commands.Group(name="db", description="このDiscordサーバーのメモリDBを管理する")
+memory_group = app_commands.Group(name="memory", description="このDiscordサーバーの長期記憶を管理する")
 
 
 @bot.event
@@ -215,11 +215,11 @@ async def cmd_status(ctx: commands.Context):
     await ctx.send(embed=_status_embed(ctx.guild.id if ctx.guild else None))
 
 
-@bot.tree.command(name="chat", description="Chat with the bot in the current channel")
-@app_commands.describe(text="The message you want the bot to answer")
+@bot.tree.command(name="chat", description="現在のチャンネルでボットとチャットする")
+@app_commands.describe(text="ボットに回答させたいメッセージ")
 async def slash_chat(interaction: discord.Interaction, text: str):
     if interaction.channel is None:
-        await interaction.response.send_message("This command can only be used in a channel.", ephemeral=True)
+        await interaction.response.send_message("このコマンドはチャンネル内でのみ使用できます。", ephemeral=True)
         return
 
     await interaction.response.defer(thinking=True)
@@ -244,7 +244,7 @@ async def slash_chat(interaction: discord.Interaction, text: str):
     await interaction.followup.send(reply)
 
 
-@bot.tree.command(name="status", description="Show the current DB and model settings")
+@bot.tree.command(name="status", description="現在のDBとモデル設定を表示する")
 async def slash_status(interaction: discord.Interaction):
     await interaction.response.send_message(
         embed=_status_embed(interaction.guild.id if interaction.guild else None),
@@ -252,31 +252,31 @@ async def slash_status(interaction: discord.Interaction):
     )
 
 
-@db_group.command(name="list", description="Show the databases that can be used by this bot")
+@db_group.command(name="list", description="このボットで使用できるDBの一覧を表示する")
 async def db_list(interaction: discord.Interaction):
     current = _db(interaction.guild.id if interaction.guild else None)
     dbs = chat_controller.available_dbs()
     lines = [f"{'*' if d == current else '-'} `{d}`" for d in dbs]
-    content = "**Available DBs**\n" + "\n".join(lines) if lines else "No DBs are available yet."
+    content = "**利用可能なDB**\n" + "\n".join(lines) if lines else "まだDBがありません。"
     await interaction.response.send_message(content, ephemeral=True)
 
 
-@db_group.command(name="current", description="Show which DB this Discord server is using")
+@db_group.command(name="current", description="このDiscordサーバーが使用しているDBを表示する")
 async def db_current(interaction: discord.Interaction):
     await interaction.response.send_message(
-        f"This server is using `{_db(interaction.guild.id if interaction.guild else None)}`.",
+        f"このサーバーは `{_db(interaction.guild.id if interaction.guild else None)}` を使用しています。",
         ephemeral=True,
     )
 
 
-@db_group.command(name="create", description="Create a new memory DB and bind it to this Discord server")
+@db_group.command(name="create", description="新しいメモリDBを作成してこのDiscordサーバーに紐付ける")
 @app_commands.describe(
-    db_name="Name of the DB to create. Use letters, numbers, '_' or '-'",
-    password="Password required later when switching this server to the DB",
+    db_name="作成するDB名。英数字、'_'、'-' が使用可能",
+    password="後でDBを切り替える際に必要なパスワード",
 )
 async def db_create(interaction: discord.Interaction, db_name: str, password: str):
     if not _require_guild(interaction):
-        await interaction.response.send_message("This command can only be used inside a Discord server.", ephemeral=True)
+        await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
         return
     if not _has_manage_guild(interaction):
         await _send_permission_error(interaction)
@@ -289,19 +289,19 @@ async def db_create(interaction: discord.Interaction, db_name: str, password: st
         return
 
     await interaction.response.send_message(
-        f"Created DB `{db_name}` and bound it to this server.",
+        f"DB `{db_name}` を作成してこのサーバーに紐付けました。",
         ephemeral=True,
     )
 
 
-@db_group.command(name="use", description="Switch this Discord server to an existing memory DB")
+@db_group.command(name="use", description="このDiscordサーバーを既存のメモリDBに切り替える")
 @app_commands.describe(
-    db_name="Name of the DB to use for this server",
-    password="Password for the target DB",
+    db_name="このサーバーで使用するDB名",
+    password="対象DBのパスワード",
 )
 async def db_use(interaction: discord.Interaction, db_name: str, password: str):
     if not _require_guild(interaction):
-        await interaction.response.send_message("This command can only be used inside a Discord server.", ephemeral=True)
+        await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
         return
     if not _has_manage_guild(interaction):
         await _send_permission_error(interaction)
@@ -314,19 +314,19 @@ async def db_use(interaction: discord.Interaction, db_name: str, password: str):
         return
 
     await interaction.response.send_message(
-        f"This server now uses `{db_name}`.",
+        f"このサーバーは `{db_name}` を使用するようになりました。",
         ephemeral=True,
     )
 
 
-@memory_group.command(name="save", description="Save a long-term memory into this server's DB")
-@app_commands.describe(text="The memory content you want the bot to remember")
+@memory_group.command(name="save", description="このサーバーのDBに長期記憶を保存する")
+@app_commands.describe(text="ボットに覚えさせたい内容")
 async def memory_save(interaction: discord.Interaction, text: str):
     if not _require_guild(interaction):
-        await interaction.response.send_message("This command can only be used inside a Discord server.", ephemeral=True)
+        await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
         return
     if not text.strip():
-        await interaction.response.send_message("Please enter some text to save.", ephemeral=True)
+        await interaction.response.send_message("保存するテキストを入力してください。", ephemeral=True)
         return
 
     db_name = _db(interaction.guild.id)
@@ -337,26 +337,26 @@ async def memory_save(interaction: discord.Interaction, text: str):
         source="discord_manual",
     )
     await interaction.response.send_message(
-        f"Saved memory #{memory_id} to `{db_name}`.",
+        f"`{db_name}` に記憶 #{memory_id} を保存しました。",
         ephemeral=True,
     )
 
 
-@memory_group.command(name="list", description="Show recent long-term memories saved for this server")
+@memory_group.command(name="list", description="このサーバーに保存された最近の長期記憶を表示する")
 async def memory_list(interaction: discord.Interaction):
     if not _require_guild(interaction):
-        await interaction.response.send_message("This command can only be used inside a Discord server.", ephemeral=True)
+        await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
         return
 
     db_name = _db(interaction.guild.id)
     items = chat_controller.recent_memories(db_name, limit=5)
     if not items:
-        await interaction.response.send_message("No saved memories yet.", ephemeral=True)
+        await interaction.response.send_message("まだ保存された記憶はありません。", ephemeral=True)
         return
 
     lines = [f"`#{item['id']}` {item['content']}" for item in items]
     await interaction.response.send_message(
-        "**Recent memories**\n" + "\n".join(lines),
+        "**最近の記憶**\n" + "\n".join(lines),
         ephemeral=True,
     )
 
@@ -393,7 +393,7 @@ async def memory_capture(interaction: discord.Interaction, limit: app_commands.R
 @memory_group.command(name="clear", description="Clear the chat history for the current channel")
 async def memory_clear(interaction: discord.Interaction):
     if not _require_guild(interaction):
-        await interaction.response.send_message("This command can only be used inside a Discord server.", ephemeral=True)
+        await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
         return
 
     deleted = chat_controller.clear_session(
@@ -401,7 +401,7 @@ async def memory_clear(interaction: discord.Interaction):
         _session(interaction.channel.id),
     )
     await interaction.response.send_message(
-        f"Cleared chat history for this channel. Deleted {deleted} messages.",
+        f"このチャンネルのチャット履歴を消去しました。{deleted} 件のメッセージを削除しました。",
         ephemeral=True,
     )
 
