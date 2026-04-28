@@ -11,6 +11,7 @@ from core.memory_manager import (
     list_memories,
     save_memory,
     save_message,
+    vacuum_db,
 )
 
 _llm = LLMClient()
@@ -223,3 +224,7 @@ def remember(db_name: str, content: str, author_id: str = "", source: str = "man
 
 def recent_memories(db_name: str, limit: int = 10) -> list[dict]:
     return list_memories(db_name, limit=limit)
+
+
+def optimize_db(db_name: str) -> bool:
+    return vacuum_db(db_name)

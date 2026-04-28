@@ -319,6 +319,30 @@ async def db_use(interaction: discord.Interaction, db_name: str, password: str):
     )
 
 
+@db_group.command(name="refresh", description="現在のDBのSQLiteファイルをVACUUMして最適化する")
+async def db_refresh(interaction: discord.Interaction):
+    if not _require_guild(interaction):
+        await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
+        return
+    if not _has_manage_guild(interaction):
+        await _send_permission_error(interaction)
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    db_name = _db(interaction.guild.id)
+    ok = chat_controller.optimize_db(db_name)
+    if ok:
+        await interaction.followup.send(
+            f"DB `{db_name}` の最適化（VACUUM）が完了しました。",
+            ephemeral=True,
+        )
+    else:
+        await interaction.followup.send(
+            f"DB `{db_name}` はSQLiteを使用していないため最適化をスキップしました。",
+            ephemeral=True,
+        )
+
+
 @memory_group.command(name="save", description="このサーバーのDBに長期記憶を保存する")
 @app_commands.describe(text="ボットに覚えさせたい内容")
 async def memory_save(interaction: discord.Interaction, text: str):
