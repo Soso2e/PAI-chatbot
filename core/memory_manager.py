@@ -205,6 +205,15 @@ def list_memories(db_name: str, limit: int = 10) -> list[dict]:
     return memories[:limit]
 
 
+def vacuum_db(db_name: str) -> bool:
+    """Run VACUUM to reclaim disk space and defragment the SQLite file."""
+    if not _sqlite_available(db_name):
+        return False
+    with _connect(db_name) as conn:
+        conn.execute("VACUUM")
+    return True
+
+
 def find_relevant_memories(db_name: str, query: str, limit: int = 5) -> list[dict]:
     init_db(db_name)
     terms = {
