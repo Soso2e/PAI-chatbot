@@ -319,7 +319,36 @@ async def db_use(interaction: discord.Interaction, db_name: str, password: str):
     )
 
 
-@db_group.command(name="refresh", description="現在のDBのSQLiteファイルをVACUUMして最適化する")
+class _RefreshConfirmView(discord.ui.View):
+    def __init__(self, db_name: str, author_id: str):
+        super().__init__(timeout=30)
+        self._db_name = db_name
+        self._author_id = author_id
+
+    @discord.ui.button(label="実行する", style=discord.ButtonStyle.primary)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="長期記憶を再構成中...", view=None)
+        result = await chat_controller.consolidate_memories(self._db_name, author_id=self._author_id)
+        if result["after"] == 0:
+            await interaction.edit_original_response(content="長期記憶が見つからなかったため、何もしませんでした。")
+            self.stop()
+            return
+        lines = [f"`#{e['id']}` {e['content']}" for e in result["entries"]]
+        summary = (
+            f"DB `{self._db_name}` の長期記憶を再構成しました。\n"
+            f"{result['before']} 件 → {result['after']} 件\n\n"
+            + "\n".join(lines)
+        )
+        await interaction.edit_original_response(content=summary)
+        self.stop()
+
+    @discord.ui.button(label="キャンセル", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="キャンセルしました。", view=None)
+        self.stop()
+
+
+@db_group.command(name="refresh", description="長期記憶を再構成して重複・分散した情報を整理する")
 async def db_refresh(interaction: discord.Interaction):
     if not _require_guild(interaction):
         await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
@@ -328,19 +357,14 @@ async def db_refresh(interaction: discord.Interaction):
         await _send_permission_error(interaction)
         return
 
-    await interaction.response.defer(ephemeral=True, thinking=True)
     db_name = _db(interaction.guild.id)
-    ok = chat_controller.optimize_db(db_name)
-    if ok:
-        await interaction.followup.send(
-            f"DB `{db_name}` の最適化（VACUUM）が完了しました。",
-            ephemeral=True,
-        )
-    else:
-        await interaction.followup.send(
-            f"DB `{db_name}` はSQLiteを使用していないため最適化をスキップしました。",
-            ephemeral=True,
-        )
+    view = _RefreshConfirmView(db_name, str(interaction.user.id))
+    await interaction.response.send_message(
+        f"DB `{db_name}` の長期記憶をAIで再構成します。\n"
+        "密度が高い記憶の分割・重複の統合が行われます。元の記憶は置き換えられます。",
+        view=view,
+        ephemeral=True,
+    )
 
 
 @memory_group.command(name="save", description="このサーバーのDBに長期記憶を保存する")

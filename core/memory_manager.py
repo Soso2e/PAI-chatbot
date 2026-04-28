@@ -214,6 +214,47 @@ def vacuum_db(db_name: str) -> bool:
     return True
 
 
+def get_all_memories(db_name: str) -> list[dict]:
+    init_db(db_name)
+    if _sqlite_available(db_name):
+        with _connect(db_name) as conn:
+            rows = conn.execute(
+                "SELECT id, content, author_id, source, created_at FROM memory_entries ORDER BY id ASC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+    return list(_load_store(db_name)["memory_entries"])
+
+
+def replace_all_memories(db_name: str, contents: list[str], author_id: str = "", source: str = "db_refresh") -> list[int]:
+    init_db(db_name)
+    if _sqlite_available(db_name):
+        with _connect(db_name) as conn:
+            conn.execute("DELETE FROM memory_entries")
+            ids = []
+            for content in contents:
+                cur = conn.execute(
+                    "INSERT INTO memory_entries (content, author_id, source) VALUES (?, ?, ?)",
+                    (content, author_id, source),
+                )
+                ids.append(int(cur.lastrowid))
+        return ids
+
+    store = _load_store(db_name)
+    store["memory_entries"] = []
+    ids = []
+    for i, content in enumerate(contents, 1):
+        store["memory_entries"].append({
+            "id": i,
+            "content": content,
+            "author_id": author_id,
+            "source": source,
+            "created_at": _utc_now(),
+        })
+        ids.append(i)
+    _save_store(db_name, store)
+    return ids
+
+
 def find_relevant_memories(db_name: str, query: str, limit: int = 5) -> list[dict]:
     init_db(db_name)
     terms = {
