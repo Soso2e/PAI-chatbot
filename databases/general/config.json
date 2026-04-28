@@ -4,7 +4,7 @@
   "style": "friendly",
   "memory_policy": {
     "auto_save": true,
-    "max_context_messages": 20
+    "max_context_messages": 10
   },
   "allowed_tools": [],
   "rag": {

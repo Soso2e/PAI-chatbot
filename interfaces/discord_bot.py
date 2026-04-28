@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 
@@ -24,6 +25,7 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix=_PREFIX, intents=intents)
 _slash_synced = False
+_background_tasks: set[asyncio.Task] = set()
 
 
 def _load_app_config() -> dict:
@@ -63,6 +65,41 @@ def _llm_error_message(error: Exception | str) -> str:
     if "timed out" in text.lower():
         return "LLM API がタイムアウトしました。モデル応答が遅いため、`config/llm.json` の `read_timeout` または `timeout` を延ばしてください。"
     return f"LLM API 呼び出しに失敗しました: {text}"
+
+
+def _track_background_task(task: asyncio.Task) -> None:
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+def _memory_capture_result_message(capture_result: dict) -> str:
+    saved = capture_result["saved"]
+    error = capture_result["error"]
+
+    lines: list[str] = []
+    if saved:
+        lines.append("長期記憶に保存しました:")
+        lines.extend(f"- #{item['id']} {item['content']}" for item in saved)
+    if error:
+        prefix = "メモリ抽出は一部失敗しました。" if saved else "メモリ抽出は失敗しました。"
+        lines.append(prefix)
+        lines.append(_llm_error_message(error))
+    return "\n".join(lines)
+
+
+async def _notify_memory_capture_result(
+    capture_task: asyncio.Task,
+    send_message,
+) -> None:
+    try:
+        capture_result = await capture_task
+    except Exception as exc:
+        await send_message(f"メモリ抽出は失敗しました。\n{_llm_error_message(exc)}")
+        return
+
+    message = _memory_capture_result_message(capture_result)
+    if message:
+        await send_message(message)
 
 
 async def _build_history_lines(
@@ -166,6 +203,16 @@ async def on_message(message: discord.Message):
             text = text.replace(f"<@{mention.id}>", "").replace(f"<@!{mention.id}>", "")
         text = text.strip()
         if text:
+            capture_task = None
+            if _should_capture_memory(text):
+                capture_task = asyncio.create_task(
+                    _capture_channel_memories(
+                        message.channel,
+                        message.guild.id if message.guild else None,
+                        str(message.author.id),
+                        source="discord_auto",
+                    )
+                )
             async with message.channel.typing():
                 try:
                     reply = await chat_controller.process(
@@ -174,26 +221,20 @@ async def on_message(message: discord.Message):
                         _db(message.guild.id if message.guild else None),
                     )
                 except RuntimeError as exc:
+                    if capture_task is not None:
+                        capture_task.cancel()
                     await message.reply(_llm_error_message(exc))
                     return
-                saved: list[dict] = []
-                if _should_capture_memory(text):
-                    capture_result = await _capture_channel_memories(
-                        message.channel,
-                        message.guild.id if message.guild else None,
-                        str(message.author.id),
-                        source="discord_auto",
-                    )
-                    saved = capture_result["saved"]
-                    if capture_result["error"]:
-                        reply += f"\n\nメモリ抽出はスキップしました: {_llm_error_message(capture_result['error'])}"
-                    if saved:
-                        reply += "\n\n長期記憶に保存しました:\n" + "\n".join(
-                            f"- #{item['id']} {item['content']}" for item in saved
-                        )
-                    elif not capture_result["error"]:
-                        reply += "\n\n確認しましたが、長期記憶として残す内容は見つかりませんでした。"
             await message.reply(reply)
+            if capture_task is not None:
+                _track_background_task(
+                    asyncio.create_task(
+                        _notify_memory_capture_result(
+                            capture_task,
+                            lambda content: message.channel.send(content),
+                        )
+                    )
+                )
             return
 
     await bot.process_commands(message)
@@ -201,6 +242,16 @@ async def on_message(message: discord.Message):
 
 @bot.command(name="chat")
 async def cmd_chat(ctx: commands.Context, *, text: str):
+    capture_task = None
+    if _should_capture_memory(text):
+        capture_task = asyncio.create_task(
+            _capture_channel_memories(
+                ctx.channel,
+                ctx.guild.id if ctx.guild else None,
+                str(ctx.author.id),
+                source="discord_auto",
+            )
+        )
     async with ctx.typing():
         try:
             reply = await chat_controller.process(
@@ -209,26 +260,20 @@ async def cmd_chat(ctx: commands.Context, *, text: str):
                 _db(ctx.guild.id if ctx.guild else None),
             )
         except RuntimeError as exc:
+            if capture_task is not None:
+                capture_task.cancel()
             await ctx.reply(_llm_error_message(exc))
             return
-        saved: list[dict] = []
-        if _should_capture_memory(text):
-            capture_result = await _capture_channel_memories(
-                ctx.channel,
-                ctx.guild.id if ctx.guild else None,
-                str(ctx.author.id),
-                source="discord_auto",
-            )
-            saved = capture_result["saved"]
-            if capture_result["error"]:
-                reply += f"\n\nメモリ抽出はスキップしました: {_llm_error_message(capture_result['error'])}"
-            if saved:
-                reply += "\n\n長期記憶に保存しました:\n" + "\n".join(
-                    f"- #{item['id']} {item['content']}" for item in saved
-                )
-            elif not capture_result["error"]:
-                reply += "\n\n確認しましたが、長期記憶として残す内容は見つかりませんでした。"
     await ctx.reply(reply)
+    if capture_task is not None:
+        _track_background_task(
+            asyncio.create_task(
+                _notify_memory_capture_result(
+                    capture_task,
+                    lambda content: ctx.send(content),
+                )
+            )
+        )
 
 
 @bot.command(name="status")
@@ -243,6 +288,16 @@ async def slash_chat(interaction: discord.Interaction, text: str):
         await interaction.response.send_message("このコマンドはチャンネル内でのみ使用できます。", ephemeral=True)
         return
 
+    capture_task = None
+    if _should_capture_memory(text):
+        capture_task = asyncio.create_task(
+            _capture_channel_memories(
+                interaction.channel,
+                interaction.guild.id if interaction.guild else None,
+                str(interaction.user.id),
+                source="discord_auto",
+            )
+        )
     await interaction.response.defer(thinking=True)
     try:
         reply = await chat_controller.process(
@@ -251,25 +306,20 @@ async def slash_chat(interaction: discord.Interaction, text: str):
             _db(interaction.guild.id if interaction.guild else None),
         )
     except RuntimeError as exc:
+        if capture_task is not None:
+            capture_task.cancel()
         await interaction.followup.send(_llm_error_message(exc), ephemeral=True)
         return
-    if _should_capture_memory(text):
-        capture_result = await _capture_channel_memories(
-            interaction.channel,
-            interaction.guild.id if interaction.guild else None,
-            str(interaction.user.id),
-            source="discord_auto",
-        )
-        saved = capture_result["saved"]
-        if capture_result["error"]:
-            reply += f"\n\nメモリ抽出はスキップしました: {_llm_error_message(capture_result['error'])}"
-        if saved:
-            reply += "\n\n長期記憶に保存しました:\n" + "\n".join(
-                f"- #{item['id']} {item['content']}" for item in saved
-            )
-        elif not capture_result["error"]:
-            reply += "\n\n確認しましたが、長期記憶として残す内容は見つかりませんでした。"
     await interaction.followup.send(reply)
+    if capture_task is not None:
+        _track_background_task(
+            asyncio.create_task(
+                _notify_memory_capture_result(
+                    capture_task,
+                    lambda content: interaction.followup.send(content),
+                )
+            )
+        )
 
 
 @bot.tree.command(name="status", description="現在のDBとモデル設定を表示する")
