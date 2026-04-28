@@ -5,13 +5,18 @@ Document ingestion CLI for PAI-chatbot RAG system.
 Usage:
     python scripts/ingest.py --db general --file docs/manual.txt
     python scripts/ingest.py --db general --dir docs/
+    python scripts/ingest.py --db general --url "https://docs.google.com/document/d/XXX"
+    python scripts/ingest.py --db general --url "https://docs.google.com/spreadsheets/d/XXX"
+    python scripts/ingest.py --db general --url "https://example.com/page"
     python scripts/ingest.py --db general --stats
     python scripts/ingest.py --db general --clear
 
 Supported formats: .txt  .md  .pdf  .json
+URL sources: Google Docs, Google Sheets (公開設定のもの), 一般Webページ
 """
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -20,6 +25,63 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from core import rag_manager
 
 _SUPPORTED = {".txt", ".md", ".pdf", ".json"}
+
+_GDOCS_RE = re.compile(r"https://docs\.google\.com/document/d/([^/?#]+)")
+_GSHEETS_RE = re.compile(r"https://docs\.google\.com/spreadsheets/d/([^/?#]+)")
+
+
+def _fetch_url(url: str) -> str | None:
+    import httpx
+
+    m = _GDOCS_RE.match(url)
+    if m:
+        export_url = f"https://docs.google.com/document/d/{m.group(1)}/export?format=txt"
+        try:
+            resp = httpx.get(export_url, follow_redirects=True, timeout=30)
+            resp.raise_for_status()
+            return resp.text
+        except httpx.HTTPStatusError as e:
+            print(f"  [error] Google Docs fetch failed ({e.response.status_code}). ドキュメントが「リンクを知っている全員」に公開されているか確認してください。")
+            return None
+
+    m = _GSHEETS_RE.match(url)
+    if m:
+        export_url = f"https://docs.google.com/spreadsheets/d/{m.group(1)}/export?format=csv"
+        try:
+            resp = httpx.get(export_url, follow_redirects=True, timeout=30)
+            resp.raise_for_status()
+            return resp.text
+        except httpx.HTTPStatusError as e:
+            print(f"  [error] Google Sheets fetch failed ({e.response.status_code}). スプレッドシートが「リンクを知っている全員」に公開されているか確認してください。")
+            return None
+
+    # General web page — requires beautifulsoup4
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        print("  [skip] beautifulsoup4 not installed — run: pip install beautifulsoup4")
+        return None
+
+    try:
+        resp = httpx.get(url, follow_redirects=True, timeout=30)
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        print(f"  [error] URL fetch failed ({e.response.status_code}): {url}")
+        return None
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for tag in soup(["script", "style", "nav", "footer", "header"]):
+        tag.decompose()
+    return soup.get_text(separator="\n", strip=True)
+
+
+def _ingest_url(db_name: str, url: str, source: str = "") -> None:
+    text = _fetch_url(url)
+    if text is None:
+        return
+    label = source or url
+    count = rag_manager.ingest_text(db_name, text, source=label)
+    print(f"  [ok] {url} → {count} chunks stored")
 
 
 def _read_file(path: Path) -> str | None:
@@ -63,6 +125,7 @@ def main() -> None:
     parser.add_argument("--db", required=True, help="Target database name (e.g. general)")
     parser.add_argument("--file", type=Path, help="Single file to ingest")
     parser.add_argument("--dir", type=Path, help="Directory to ingest recursively")
+    parser.add_argument("--url", help="URL to fetch and ingest (Google Docs/Sheets/Web)")
     parser.add_argument("--source", default="", help="Override source label in metadata")
     parser.add_argument("--stats", action="store_true", help="Show collection stats and exit")
     parser.add_argument("--clear", action="store_true", help="Delete all documents from collection")
@@ -97,6 +160,11 @@ def main() -> None:
         print(f"Ingesting {len(files)} file(s) from '{args.dir}' → DB '{args.db}'")
         for f in files:
             _ingest_file(args.db, f, args.source)
+        return
+
+    if args.url:
+        print(f"Fetching {args.url} → DB '{args.db}'")
+        _ingest_url(args.db, args.url, args.source)
         return
 
     parser.print_help()
