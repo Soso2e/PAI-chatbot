@@ -348,8 +348,8 @@ class _RefreshConfirmView(discord.ui.View):
         self.stop()
 
 
-@db_group.command(name="refresh", description="長期記憶を再構成して重複・分散した情報を整理する")
-async def db_refresh(interaction: discord.Interaction):
+@memory_group.command(name="optimize", description="長期記憶をAIで再構成し、重複・分散した情報を整理する")
+async def memory_optimize(interaction: discord.Interaction):
     if not _require_guild(interaction):
         await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
         return
