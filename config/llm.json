@@ -1,7 +1,7 @@
 {
   "provider": "ollama",
   "base_url": "http://10.192.98.115:11434",
-  "model": "qwen3:8b",
+  "model": "qwen3.5:9b",
   "api_key": "",
   "timeout": 60,
   "options": {

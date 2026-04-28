@@ -89,7 +89,7 @@ def ingest_text(
     rag_cfg = _load_rag_config(db_name)
     llm_cfg = _load_llm_config()
 
-    embedding_model = rag_cfg.get("embedding_model", "bge-base")
+    embedding_model = rag_cfg.get("embedding_model", "bge-m3")
     chunk_size = rag_cfg.get("chunk_size", 500)
     chunk_overlap = rag_cfg.get("chunk_overlap", 50)
     base_url = llm_cfg.get("base_url", "http://localhost:11434")
@@ -132,7 +132,7 @@ def search(
     rag_cfg = _load_rag_config(db_name)
     llm_cfg = _load_llm_config()
 
-    embedding_model = rag_cfg.get("embedding_model", "bge-base")
+    embedding_model = rag_cfg.get("embedding_model", "bge-m3")
     base_url = llm_cfg.get("base_url", "http://localhost:11434")
 
     collection = _get_collection(db_name)
@@ -185,7 +185,7 @@ def collection_stats(db_name: str) -> dict:
         return {
             "document_count": collection.count(),
             "enabled": rag_cfg.get("enabled", False),
-            "embedding_model": rag_cfg.get("embedding_model", "bge-base"),
+            "embedding_model": rag_cfg.get("embedding_model", "bge-m3"),
         }
     except Exception:
         return {"document_count": 0, "enabled": False, "embedding_model": ""}
