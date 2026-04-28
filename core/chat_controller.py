@@ -7,8 +7,10 @@ from core.db_registry import bind_guild_db, register_db, verify_db_password
 from core.llm_client import LLMClient
 from core.memory_manager import (
     clear_history,
+    get_all_memories,
     init_db,
     list_memories,
+    replace_all_memories,
     save_memory,
     save_message,
     vacuum_db,
@@ -228,3 +230,38 @@ def recent_memories(db_name: str, limit: int = 10) -> list[dict]:
 
 def optimize_db(db_name: str) -> bool:
     return vacuum_db(db_name)
+
+
+_CONSOLIDATE_MEMORIES_PROMPT = (
+    "You reorganize a list of long-term memory entries for a chatbot.\n"
+    "Given the current memory list, return a reorganized version that:\n"
+    "- Splits overly dense entries (containing multiple facts) into atomic, single-fact entries\n"
+    "- Merges near-duplicate or highly similar entries into one\n"
+    "- Removes redundant information\n"
+    "- Keeps each entry as a short, standalone sentence in Japanese\n"
+    "- Preserves all distinct facts — do not lose information\n"
+    "Output format: [\"memory 1\", \"memory 2\", ...]\n"
+    "Return JSON array only, no explanation."
+)
+
+
+async def consolidate_memories(db_name: str, author_id: str = "") -> dict:
+    all_memories = get_all_memories(db_name)
+    if not all_memories:
+        return {"before": 0, "after": 0, "entries": []}
+
+    lines = [f"{i + 1}. {m['content']}" for i, m in enumerate(all_memories)]
+    messages = [
+        {"role": "system", "content": _CONSOLIDATE_MEMORIES_PROMPT},
+        {"role": "user", "content": "\n".join(lines)},
+    ]
+
+    raw = await _llm.chat(messages)
+    candidates = _parse_memory_candidates(raw)
+    normalized = [_normalize_memory_text(c) for c in candidates if c.strip()]
+    if not normalized:
+        return {"before": len(all_memories), "after": 0, "entries": []}
+
+    new_ids = replace_all_memories(db_name, normalized, author_id=author_id, source="db_refresh")
+    entries = [{"id": new_ids[i], "content": normalized[i]} for i in range(len(normalized))]
+    return {"before": len(all_memories), "after": len(normalized), "entries": entries}
