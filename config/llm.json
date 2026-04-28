@@ -1,7 +1,7 @@
 {
   "provider": "openai",
   "base_url": "http://10.192.98.115:1234",
-  "model": "qwen3.6:27b",
+  "model": "qwen3.5:9b",
   "api_key": "lm-studio",
   "timeout": 300,
   "connect_timeout": 10,
