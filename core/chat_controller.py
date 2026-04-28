@@ -24,6 +24,8 @@ _SELF_NAME_PATTERNS = [
     re.compile(r"(?:ぼく|僕|おれ|俺|わたし|私)[はって]?\s*(?P<alias>[^\s。、「」]+?)\s*(?:っていう|って言う|です|だよ|だ|といいます|と言います)"),
     re.compile(r"(?P<alias>[^\s。、「」]+?)\s*(?:って呼んで|ってよんで|と呼んで|でいいよ)"),
 ]
+_MEMORY_CAPTURE_MAX_LINES = 40
+_MEMORY_CAPTURE_MAX_CHARS = 6000
 
 
 def _db_dir(db_name: str) -> Path:
@@ -129,6 +131,30 @@ def _extract_rule_based_memories(history_lines: list[str]) -> list[str]:
     return memories[:5]
 
 
+def _prepare_history_for_memory_extraction(history_lines: list[str]) -> str:
+    trimmed_lines = [line.strip() for line in history_lines if line and line.strip()]
+    if not trimmed_lines:
+        return ""
+
+    trimmed_lines = trimmed_lines[-_MEMORY_CAPTURE_MAX_LINES:]
+    if len(trimmed_lines) == 1:
+        return trimmed_lines[0][-_MEMORY_CAPTURE_MAX_CHARS:]
+
+    result: list[str] = []
+    total = 0
+    for line in reversed(trimmed_lines):
+        line_len = len(line) + 1
+        if result and total + line_len > _MEMORY_CAPTURE_MAX_CHARS:
+            break
+        if not result and line_len > _MEMORY_CAPTURE_MAX_CHARS:
+            result.append(line[-_MEMORY_CAPTURE_MAX_CHARS:])
+            break
+        result.append(line)
+        total += line_len
+    result.reverse()
+    return "\n".join(result)
+
+
 async def process(
     message: str,
     session_id: str,
@@ -147,21 +173,23 @@ async def capture_memories_from_history(
     history_lines: list[str],
     author_id: str = "",
     source: str = "discord_capture",
-) -> list[dict]:
+) -> dict:
     cleaned_lines = [line.strip() for line in history_lines if line and line.strip()]
     if not cleaned_lines:
-        return []
+        return {"saved": [], "error": ""}
 
     rule_based_candidates = _extract_rule_based_memories(cleaned_lines)
-    history_text = "\n".join(cleaned_lines[-120:])
+    history_text = _prepare_history_for_memory_extraction(cleaned_lines)
     raw = "[]"
+    llm_error = ""
     try:
         raw = await _llm.chat(_memory_extraction_messages(history_text))
     except RuntimeError as exc:
+        llm_error = str(exc)
         print(f"[MemoryCapture] LLM extraction skipped due to error: {exc}")
     candidates = rule_based_candidates + _parse_memory_candidates(raw)
     if not candidates:
-        return []
+        return {"saved": [], "error": llm_error}
 
     existing = {
         _normalize_memory_text(item["content"]).lower()
@@ -188,7 +216,7 @@ async def capture_memories_from_history(
                 "source": source,
             }
         )
-    return saved
+    return {"saved": saved, "error": llm_error}
 
 
 def clear_session(db_name: str, session_id: str) -> int:

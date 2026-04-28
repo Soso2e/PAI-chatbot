@@ -58,8 +58,8 @@ def _should_capture_memory(text: str) -> bool:
     return any(phrase in text or phrase in lowered for phrase in _MEMORY_TRIGGER_PHRASES)
 
 
-def _llm_error_message(exc: Exception) -> str:
-    text = str(exc)
+def _llm_error_message(error: Exception | str) -> str:
+    text = str(error)
     if "timed out" in text.lower():
         return "LLM API がタイムアウトしました。モデル応答が遅いため、`config/llm.json` の `read_timeout` または `timeout` を延ばしてください。"
     return f"LLM API 呼び出しに失敗しました: {text}"
@@ -89,7 +89,7 @@ async def _capture_channel_memories(
     author_id: str,
     source: str = "discord_capture",
     limit: int = 40,
-) -> list[dict]:
+) -> dict:
     history_lines = await _build_history_lines(channel, limit=limit)
     return await chat_controller.capture_memories_from_history(
         _db(guild_id),
@@ -176,24 +176,22 @@ async def on_message(message: discord.Message):
                 except RuntimeError as exc:
                     await message.reply(_llm_error_message(exc))
                     return
-                saved = []
-                memory_capture_failed = False
+                saved: list[dict] = []
                 if _should_capture_memory(text):
-                    try:
-                        saved = await _capture_channel_memories(
-                            message.channel,
-                            message.guild.id if message.guild else None,
-                            str(message.author.id),
-                            source="discord_auto",
-                        )
-                    except RuntimeError as exc:
-                        memory_capture_failed = True
-                        reply += f"\n\nメモリ抽出はスキップしました: {_llm_error_message(exc)}"
+                    capture_result = await _capture_channel_memories(
+                        message.channel,
+                        message.guild.id if message.guild else None,
+                        str(message.author.id),
+                        source="discord_auto",
+                    )
+                    saved = capture_result["saved"]
+                    if capture_result["error"]:
+                        reply += f"\n\nメモリ抽出はスキップしました: {_llm_error_message(capture_result['error'])}"
                     if saved:
                         reply += "\n\n長期記憶に保存しました:\n" + "\n".join(
                             f"- #{item['id']} {item['content']}" for item in saved
                         )
-                    elif not memory_capture_failed:
+                    elif not capture_result["error"]:
                         reply += "\n\n確認しましたが、長期記憶として残す内容は見つかりませんでした。"
             await message.reply(reply)
             return
@@ -213,24 +211,22 @@ async def cmd_chat(ctx: commands.Context, *, text: str):
         except RuntimeError as exc:
             await ctx.reply(_llm_error_message(exc))
             return
-        saved = []
-        memory_capture_failed = False
+        saved: list[dict] = []
         if _should_capture_memory(text):
-            try:
-                saved = await _capture_channel_memories(
-                    ctx.channel,
-                    ctx.guild.id if ctx.guild else None,
-                    str(ctx.author.id),
-                    source="discord_auto",
-                )
-            except RuntimeError as exc:
-                memory_capture_failed = True
-                reply += f"\n\nメモリ抽出はスキップしました: {_llm_error_message(exc)}"
+            capture_result = await _capture_channel_memories(
+                ctx.channel,
+                ctx.guild.id if ctx.guild else None,
+                str(ctx.author.id),
+                source="discord_auto",
+            )
+            saved = capture_result["saved"]
+            if capture_result["error"]:
+                reply += f"\n\nメモリ抽出はスキップしました: {_llm_error_message(capture_result['error'])}"
             if saved:
                 reply += "\n\n長期記憶に保存しました:\n" + "\n".join(
                     f"- #{item['id']} {item['content']}" for item in saved
                 )
-            elif not memory_capture_failed:
+            elif not capture_result["error"]:
                 reply += "\n\n確認しましたが、長期記憶として残す内容は見つかりませんでした。"
     await ctx.reply(reply)
 
@@ -258,23 +254,20 @@ async def slash_chat(interaction: discord.Interaction, text: str):
         await interaction.followup.send(_llm_error_message(exc), ephemeral=True)
         return
     if _should_capture_memory(text):
-        memory_capture_failed = False
-        try:
-            saved = await _capture_channel_memories(
-                interaction.channel,
-                interaction.guild.id if interaction.guild else None,
-                str(interaction.user.id),
-                source="discord_auto",
-            )
-        except RuntimeError as exc:
-            memory_capture_failed = True
-            saved = []
-            reply += f"\n\nメモリ抽出はスキップしました: {_llm_error_message(exc)}"
+        capture_result = await _capture_channel_memories(
+            interaction.channel,
+            interaction.guild.id if interaction.guild else None,
+            str(interaction.user.id),
+            source="discord_auto",
+        )
+        saved = capture_result["saved"]
+        if capture_result["error"]:
+            reply += f"\n\nメモリ抽出はスキップしました: {_llm_error_message(capture_result['error'])}"
         if saved:
             reply += "\n\n長期記憶に保存しました:\n" + "\n".join(
                 f"- #{item['id']} {item['content']}" for item in saved
             )
-        elif not memory_capture_failed:
+        elif not capture_result["error"]:
             reply += "\n\n確認しましたが、長期記憶として残す内容は見つかりませんでした。"
     await interaction.followup.send(reply)
 
@@ -455,16 +448,21 @@ async def memory_capture(interaction: discord.Interaction, limit: app_commands.R
         return
 
     await interaction.response.defer(ephemeral=True, thinking=True)
-    try:
-        saved = await _capture_channel_memories(
-            interaction.channel,
-            interaction.guild.id,
-            str(interaction.user.id),
-            source="discord_manual_capture",
-            limit=limit,
-        )
-    except RuntimeError as exc:
-        await interaction.followup.send(_llm_error_message(exc), ephemeral=True)
+    capture_result = await _capture_channel_memories(
+        interaction.channel,
+        interaction.guild.id,
+        str(interaction.user.id),
+        source="discord_manual_capture",
+        limit=limit,
+    )
+    saved = capture_result["saved"]
+    if capture_result["error"]:
+        message = "メモリ抽出は失敗しました。"
+        if saved:
+            lines = [f"`#{item['id']}` {item['content']}" for item in saved]
+            message += "\nただし、ルールベースで抽出できた内容は保存しました:\n" + "\n".join(lines)
+        message += f"\n\n詳細: {_llm_error_message(capture_result['error'])}"
+        await interaction.followup.send(message, ephemeral=True)
         return
     if not saved:
         await interaction.followup.send("保存候補は見つかりませんでした。", ephemeral=True)

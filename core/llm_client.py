@@ -57,6 +57,15 @@ class LLMClient:
                     raise RuntimeError(
                         f"LLM request timed out after {timeout.read}s while waiting for {url}"
                     ) from exc
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                if attempt >= retries:
+                    detail = exc.response.text.strip()
+                    if len(detail) > 500:
+                        detail = detail[:500] + "..."
+                    raise RuntimeError(
+                        f"LLM request failed for {url}: {exc}. Response body: {detail}"
+                    ) from exc
             except httpx.HTTPError as exc:
                 last_error = exc
                 if attempt >= retries:
