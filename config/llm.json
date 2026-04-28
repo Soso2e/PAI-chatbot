@@ -1,11 +1,8 @@
 {
-  "provider": "ollama",
-  "base_url": "http://10.192.98.115:11434",
-  "model": "qwen3:8b",
-  "api_key": "",
-  "timeout": 60,
-  "options": {
-    "temperature": 0.3,
-    "num_ctx": 8192
-  }
+  "provider": "openai",
+  "base_url": "http://10.192.98.115:1234",
+  "model": "qwen3.6:27b",
+  "api_key": "lm-studio",
+  "timeout": 120,
+  "options": {}
 }
