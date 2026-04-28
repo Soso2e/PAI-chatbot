@@ -11,7 +11,7 @@
   ],
   "rag": {
     "enabled": false,
-    "embedding_model": "bge-base",
+    "embedding_model": "bge-m3",
     "chunk_size": 500,
     "chunk_overlap": 50,
     "retrieval_k": 4,

@@ -43,7 +43,12 @@ class SwitchRequest(BaseModel):
 async def chat(req: ChatRequest):
     if req.db_name not in chat_controller.available_dbs():
         raise HTTPException(status_code=400, detail=f"DB '{req.db_name}' not found")
-    reply = await chat_controller.process(req.message, req.session_id, req.db_name)
+    try:
+        reply = await chat_controller.process(req.message, req.session_id, req.db_name)
+    except RuntimeError as exc:
+        detail = str(exc)
+        status_code = 504 if "timed out" in detail.lower() else 502
+        raise HTTPException(status_code=status_code, detail=detail) from exc
     return ChatResponse(reply=reply, db_used=req.db_name, session_id=req.session_id)
 
 

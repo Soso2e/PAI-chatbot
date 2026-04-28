@@ -1,7 +1,8 @@
+import asyncio
 import json
-import httpx
 from pathlib import Path
-from typing import AsyncGenerator
+
+import httpx
 
 CONFIG_PATH = Path(__file__).parent.parent / "config" / "llm.json"
 
@@ -17,6 +18,53 @@ class LLMClient:
 
     def reload(self):
         self._cfg = _load_config()
+
+    def _timeout(self) -> httpx.Timeout:
+        raw = self._cfg.get("timeout", 120)
+        if isinstance(raw, dict):
+            return httpx.Timeout(
+                timeout=raw.get("timeout", None),
+                connect=raw.get("connect", 10.0),
+                read=raw.get("read", 120.0),
+                write=raw.get("write", 120.0),
+                pool=raw.get("pool", 120.0),
+            )
+
+        total = float(raw)
+        return httpx.Timeout(
+            timeout=total,
+            connect=float(self._cfg.get("connect_timeout", min(total, 10.0))),
+            read=float(self._cfg.get("read_timeout", total)),
+            write=float(self._cfg.get("write_timeout", total)),
+            pool=float(self._cfg.get("pool_timeout", total)),
+        )
+
+    async def _post_json(self, url: str, payload: dict, headers: dict | None = None) -> dict:
+        retries = max(0, int(self._cfg.get("max_retries", 1)))
+        backoff = float(self._cfg.get("retry_backoff_seconds", 1.5))
+        timeout = self._timeout()
+        last_error: Exception | None = None
+
+        for attempt in range(retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    resp = await client.post(url, json=payload, headers=headers or {})
+                    resp.raise_for_status()
+                    return resp.json()
+            except httpx.TimeoutException as exc:
+                last_error = exc
+                if attempt >= retries:
+                    raise RuntimeError(
+                        f"LLM request timed out after {timeout.read}s while waiting for {url}"
+                    ) from exc
+            except httpx.HTTPError as exc:
+                last_error = exc
+                if attempt >= retries:
+                    raise RuntimeError(f"LLM request failed for {url}: {exc}") from exc
+
+            await asyncio.sleep(backoff * (attempt + 1))
+
+        raise RuntimeError(f"LLM request failed for {url}: {last_error}")
 
     async def chat(self, messages: list[dict]) -> str:
         provider = self._cfg.get("provider", "ollama")
@@ -37,11 +85,8 @@ class LLMClient:
             "stream": False,
             "options": self._cfg.get("options", {}),
         }
-        async with httpx.AsyncClient(timeout=self._cfg.get("timeout", 60)) as client:
-            resp = await client.post(url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-            return data["message"]["content"]
+        data = await self._post_json(url, payload)
+        return data["message"]["content"]
 
     # ── OpenAI-compatible ────────────────────────────────────────────────────
 
@@ -57,8 +102,5 @@ class LLMClient:
             "messages": messages,
             "temperature": opts.get("temperature", 0.7),
         }
-        async with httpx.AsyncClient(timeout=self._cfg.get("timeout", 60)) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
+        data = await self._post_json(url, payload, headers=headers)
+        return data["choices"][0]["message"]["content"]

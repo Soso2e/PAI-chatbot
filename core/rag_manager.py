@@ -43,13 +43,31 @@ def _get_collection(db_name: str) -> chromadb.Collection:
     )
 
 
+def _llm_headers(llm_cfg: dict) -> dict:
+    api_key = llm_cfg.get("api_key", "")
+    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+
 def _embed(texts: list[str], model: str, base_url: str) -> list[list[float]]:
-    """Call Ollama /api/embed to get embeddings for a list of texts."""
-    url = base_url.rstrip("/") + "/api/embed"
+    """Get embeddings from the configured provider."""
+    llm_cfg = _load_llm_config()
+    provider = llm_cfg.get("provider", "openai")
+    headers = _llm_headers(llm_cfg)
+
     with httpx.Client(timeout=60) as client:
-        resp = client.post(url, json={"model": model, "input": texts})
-        resp.raise_for_status()
-    return resp.json()["embeddings"]
+        if provider == "ollama":
+            url = base_url.rstrip("/") + "/api/embed"
+            resp = client.post(url, json={"model": model, "input": texts}, headers=headers)
+            resp.raise_for_status()
+            return resp.json()["embeddings"]
+
+        if provider == "openai":
+            url = base_url.rstrip("/") + "/v1/embeddings"
+            resp = client.post(url, json={"model": model, "input": texts}, headers=headers)
+            resp.raise_for_status()
+            return [item["embedding"] for item in resp.json()["data"]]
+
+        raise ValueError(f"Unknown provider for embeddings: {provider}")
 
 
 def _chunk_text(text: str, chunk_size: int = 500, chunk_overlap: int = 50) -> list[str]:

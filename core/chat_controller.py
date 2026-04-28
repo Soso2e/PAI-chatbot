@@ -154,7 +154,11 @@ async def capture_memories_from_history(
 
     rule_based_candidates = _extract_rule_based_memories(cleaned_lines)
     history_text = "\n".join(cleaned_lines[-120:])
-    raw = await _llm.chat(_memory_extraction_messages(history_text))
+    raw = "[]"
+    try:
+        raw = await _llm.chat(_memory_extraction_messages(history_text))
+    except RuntimeError as exc:
+        print(f"[MemoryCapture] LLM extraction skipped due to error: {exc}")
     candidates = rule_based_candidates + _parse_memory_candidates(raw)
     if not candidates:
         return []
