@@ -255,13 +255,34 @@ def replace_all_memories(db_name: str, contents: list[str], author_id: str = "",
     return ids
 
 
-def find_relevant_memories(db_name: str, query: str, limit: int = 5) -> list[dict]:
-    init_db(db_name)
-    terms = {
+def _is_cjk(char: str) -> bool:
+    cp = ord(char)
+    return (
+        0x3000 <= cp <= 0x9FFF   # CJK unified, hiragana, katakana
+        or 0xF900 <= cp <= 0xFFEF  # CJK compatibility
+        or 0x20000 <= cp <= 0x2FA1F  # CJK extensions B-F
+    )
+
+
+def _tokenize_query(query: str) -> set[str]:
+    """Tokenize query using whitespace splitting; add CJK bigrams for Japanese/Chinese text."""
+    word_tokens = [
         token.lower()
         for token in query.replace("\n", " ").split()
         if len(token.strip()) >= 2
-    }
+    ]
+    terms: set[str] = set(word_tokens)
+    for token in word_tokens:
+        if any(_is_cjk(c) for c in token):
+            # Character bigrams enable meaningful matching without a morphological analyzer
+            for i in range(len(token) - 1):
+                terms.add(token[i : i + 2])
+    return terms
+
+
+def find_relevant_memories(db_name: str, query: str, limit: int = 5) -> list[dict]:
+    init_db(db_name)
+    terms = _tokenize_query(query)
     if _sqlite_available(db_name):
         with _connect(db_name) as conn:
             rows = conn.execute(
