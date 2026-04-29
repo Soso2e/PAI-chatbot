@@ -9,6 +9,8 @@ from discord.ext import commands
 from core import chat_controller
 from core.db_registry import get_guild_db
 
+_VALID_RAG_BACKENDS = ("chroma", "json")
+
 _PREFIX = "!"
 APP_CONFIG_PATH = Path(__file__).parent.parent / "config" / "app.json"
 LLM_CONFIG_PATH = Path(__file__).parent.parent / "config" / "llm.json"
@@ -184,6 +186,7 @@ async def _sync_slash_commands() -> None:
 
 db_group = app_commands.Group(name="db", description="このDiscordサーバーのメモリDBを管理する")
 memory_group = app_commands.Group(name="memory", description="このDiscordサーバーの長期記憶を管理する")
+rag_group = app_commands.Group(name="rag", description="現在のDBのRAG（知識検索）を管理する")
 
 
 @bot.event
@@ -541,8 +544,88 @@ async def memory_clear(interaction: discord.Interaction):
     )
 
 
+@rag_group.command(name="on", description="現在のDBのRAGを有効にする")
+async def rag_on(interaction: discord.Interaction):
+    if not _require_guild(interaction):
+        await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
+        return
+    if not _has_manage_guild(interaction):
+        await _send_permission_error(interaction)
+        return
+
+    db_name = _db(interaction.guild.id)
+    chat_controller.rag_enable(db_name)
+    await interaction.response.send_message(
+        f"DB `{db_name}` の RAG を有効にしました。",
+        ephemeral=True,
+    )
+
+
+@rag_group.command(name="off", description="現在のDBのRAGを無効にする")
+async def rag_off(interaction: discord.Interaction):
+    if not _require_guild(interaction):
+        await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
+        return
+    if not _has_manage_guild(interaction):
+        await _send_permission_error(interaction)
+        return
+
+    db_name = _db(interaction.guild.id)
+    chat_controller.rag_disable(db_name)
+    await interaction.response.send_message(
+        f"DB `{db_name}` の RAG を無効にしました。",
+        ephemeral=True,
+    )
+
+
+@rag_group.command(name="status", description="現在のDBのRAG状態（有効/無効・バックエンド・文書数）を表示する")
+async def rag_status(interaction: discord.Interaction):
+    if not _require_guild(interaction):
+        await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
+        return
+
+    db_name = _db(interaction.guild.id)
+    stats = chat_controller.rag_get_status(db_name)
+    enabled_label = "有効" if stats.get("enabled") else "無効"
+    embed = discord.Embed(title=f"RAG ステータス — `{db_name}`", color=0x57F287 if stats.get("enabled") else 0x99AAB5)
+    embed.add_field(name="状態", value=enabled_label, inline=True)
+    embed.add_field(name="バックエンド", value=f"`{stats.get('vector_backend', 'chroma')}`", inline=True)
+    embed.add_field(name="文書数", value=str(stats.get("document_count", 0)), inline=True)
+    embed.add_field(name="埋め込みモデル", value=f"`{stats.get('embedding_model', '-')}`", inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@rag_group.command(name="backend", description="現在のDBのベクターDBバックエンドを切り替える（chroma / json）")
+@app_commands.describe(backend="使用するバックエンド: chroma（高速・永続）または json（依存なし・小規模向け）")
+@app_commands.choices(backend=[
+    app_commands.Choice(name="chroma（ChromaDB・推奨）", value="chroma"),
+    app_commands.Choice(name="json（純粋Python・依存なし）", value="json"),
+])
+async def rag_backend(interaction: discord.Interaction, backend: str):
+    if not _require_guild(interaction):
+        await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
+        return
+    if not _has_manage_guild(interaction):
+        await _send_permission_error(interaction)
+        return
+
+    db_name = _db(interaction.guild.id)
+    try:
+        chat_controller.rag_set_backend(db_name, backend)
+    except ValueError as exc:
+        await interaction.response.send_message(str(exc), ephemeral=True)
+        return
+
+    await interaction.response.send_message(
+        f"DB `{db_name}` のベクターDBバックエンドを `{backend}` に切り替えました。\n"
+        "既存のインデックスはそのまま残ります。再インデックスが必要な場合は `scripts/ingest.py` を使用してください。",
+        ephemeral=True,
+    )
+
+
 bot.tree.add_command(db_group)
 bot.tree.add_command(memory_group)
+bot.tree.add_command(rag_group)
 
 
 def run(token: str):

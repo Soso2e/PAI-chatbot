@@ -297,3 +297,50 @@ async def consolidate_memories(db_name: str, author_id: str = "") -> dict:
     new_ids = replace_all_memories(db_name, normalized, author_id=author_id, source="db_refresh")
     entries = [{"id": new_ids[i], "content": normalized[i]} for i in range(len(normalized))]
     return {"before": len(all_memories), "after": len(normalized), "entries": entries}
+
+
+# ---------------------------------------------------------------------------
+# RAG management helpers
+# ---------------------------------------------------------------------------
+
+_VALID_RAG_BACKENDS = ("chroma", "json")
+
+
+def _load_db_config(db_name: str) -> dict:
+    path = _db_dir(db_name) / "config.json"
+    if not path.exists():
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _save_db_config(db_name: str, cfg: dict) -> None:
+    path = _db_dir(db_name) / "config.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
+def rag_enable(db_name: str) -> None:
+    cfg = _load_db_config(db_name)
+    cfg.setdefault("rag", {})["enabled"] = True
+    _save_db_config(db_name, cfg)
+
+
+def rag_disable(db_name: str) -> None:
+    cfg = _load_db_config(db_name)
+    cfg.setdefault("rag", {})["enabled"] = False
+    _save_db_config(db_name, cfg)
+
+
+def rag_set_backend(db_name: str, backend: str) -> None:
+    if backend not in _VALID_RAG_BACKENDS:
+        raise ValueError(f"backend は {_VALID_RAG_BACKENDS} のいずれかを指定してください")
+    cfg = _load_db_config(db_name)
+    cfg.setdefault("rag", {})["vector_backend"] = backend
+    _save_db_config(db_name, cfg)
+
+
+def rag_get_status(db_name: str) -> dict:
+    from core.rag_manager import collection_stats
+    return collection_stats(db_name)
