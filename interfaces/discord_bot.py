@@ -491,6 +491,30 @@ async def memory_list(interaction: discord.Interaction):
     )
 
 
+@memory_group.command(name="delete", description="IDを指定して長期記憶を1件削除する")
+@app_commands.describe(memory_id="削除する記憶のID（/memory list で確認できます）")
+async def memory_delete(interaction: discord.Interaction, memory_id: int):
+    if not _require_guild(interaction):
+        await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
+        return
+    if not _has_manage_guild(interaction):
+        await _send_permission_error(interaction)
+        return
+
+    db_name = _db(interaction.guild.id)
+    deleted = chat_controller.memory_delete(db_name, memory_id)
+    if deleted:
+        await interaction.response.send_message(
+            f"記憶 `#{memory_id}` を削除しました。",
+            ephemeral=True,
+        )
+    else:
+        await interaction.response.send_message(
+            f"記憶 `#{memory_id}` が見つかりませんでした。",
+            ephemeral=True,
+        )
+
+
 @memory_group.command(name="capture", description="このチャンネルの最近のメッセージから長期記憶を抽出して保存する")
 @app_commands.describe(limit="調査する最近のメッセージ数（10〜100）")
 async def memory_capture(interaction: discord.Interaction, limit: app_commands.Range[int, 10, 100] = 40):
@@ -762,6 +786,75 @@ async def rag_paste(interaction: discord.Interaction):
 
     db_name = _db(interaction.guild.id)
     await interaction.response.send_modal(_IngestTextModal(db_name))
+
+
+@rag_group.command(name="sources", description="現在のDBのRAGインデックスに登録されているソース一覧を表示する")
+async def rag_sources(interaction: discord.Interaction):
+    if not _require_guild(interaction):
+        await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
+        return
+
+    db_name = _db(interaction.guild.id)
+    sources = chat_controller.rag_list_sources(db_name)
+    if not sources:
+        await interaction.response.send_message("RAGインデックスにソースがありません。", ephemeral=True)
+        return
+
+    lines = [f"- `{s}`" for s in sources]
+    await interaction.response.send_message(
+        f"**DB `{db_name}` のRAGソース一覧**\n" + "\n".join(lines),
+        ephemeral=True,
+    )
+
+
+class _RagDeleteSourceConfirmView(discord.ui.View):
+    def __init__(self, db_name: str, source: str):
+        super().__init__(timeout=30)
+        self._db_name = db_name
+        self._source = source
+
+    @discord.ui.button(label="削除する", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="削除中...", view=None)
+        count = await asyncio.to_thread(
+            chat_controller.rag_delete_by_source, self._db_name, self._source
+        )
+        await interaction.edit_original_response(
+            content=f"ソース `{self._source}` の **{count}** チャンクを削除しました。"
+        )
+        self.stop()
+
+    @discord.ui.button(label="キャンセル", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="キャンセルしました。", view=None)
+        self.stop()
+
+
+@rag_group.command(name="delete", description="指定したソース名のRAGチャンクを削除する")
+@app_commands.describe(source="削除するソース名（/rag sources で確認できます）")
+async def rag_delete(interaction: discord.Interaction, source: str):
+    if not _require_guild(interaction):
+        await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
+        return
+    if not _has_manage_guild(interaction):
+        await _send_permission_error(interaction)
+        return
+
+    db_name = _db(interaction.guild.id)
+    sources = chat_controller.rag_list_sources(db_name)
+    if source not in sources:
+        await interaction.response.send_message(
+            f"ソース `{source}` が見つかりません。`/rag sources` で登録済みのソースを確認してください。",
+            ephemeral=True,
+        )
+        return
+
+    view = _RagDeleteSourceConfirmView(db_name, source)
+    await interaction.response.send_message(
+        f"ソース `{source}` のチャンクを削除します。よろしいですか？",
+        view=view,
+        ephemeral=True,
+    )
 
 
 @rag_group.command(name="clear", description="現在のDBのRAGインデックスを全削除する")

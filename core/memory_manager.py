@@ -205,6 +205,23 @@ def list_memories(db_name: str, limit: int = 10) -> list[dict]:
     return memories[:limit]
 
 
+def delete_memory(db_name: str, memory_id: int) -> bool:
+    """Delete a single memory entry by ID. Returns True if a row was deleted."""
+    init_db(db_name)
+    if _sqlite_available(db_name):
+        with _connect(db_name) as conn:
+            cur = conn.execute("DELETE FROM memory_entries WHERE id = ?", (memory_id,))
+            return cur.rowcount > 0
+
+    store = _load_store(db_name)
+    before = len(store["memory_entries"])
+    store["memory_entries"] = [e for e in store["memory_entries"] if e["id"] != memory_id]
+    if len(store["memory_entries"]) < before:
+        _save_store(db_name, store)
+        return True
+    return False
+
+
 def vacuum_db(db_name: str) -> bool:
     """Run VACUUM to reclaim disk space and defragment the SQLite file."""
     if not _sqlite_available(db_name):

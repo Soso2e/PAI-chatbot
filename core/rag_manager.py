@@ -95,6 +95,15 @@ def _chroma_clear(db_name: str) -> int:
     return count
 
 
+def _chroma_delete_by_source(db_name: str, source: str) -> int:
+    collection = _chroma_get_collection(db_name)
+    results = collection.get(where={"source": source}, include=[])
+    ids = results["ids"]
+    if ids:
+        collection.delete(ids=ids)
+    return len(ids)
+
+
 def _chroma_count(db_name: str) -> int:
     return _chroma_get_collection(db_name).count()
 
@@ -161,6 +170,15 @@ def _json_clear(db_name: str) -> int:
     if count > 0:
         _json_save(db_name, [])
     return count
+
+
+def _json_delete_by_source(db_name: str, source: str) -> int:
+    records = _json_load(db_name)
+    remaining = [r for r in records if r["metadata"].get("source", "") != source]
+    deleted = len(records) - len(remaining)
+    if deleted > 0:
+        _json_save(db_name, remaining)
+    return deleted
 
 
 def _json_count(db_name: str) -> int:
@@ -296,6 +314,27 @@ def clear_collection(db_name: str) -> int:
     if backend == "json":
         return _json_clear(db_name)
     return _chroma_clear(db_name)
+
+
+def delete_by_source(db_name: str, source: str) -> int:
+    """Delete all chunks whose source matches the given string. Returns count of deleted chunks."""
+    backend = _get_backend(db_name)
+    if backend == "json":
+        return _json_delete_by_source(db_name, source)
+    return _chroma_delete_by_source(db_name, source)
+
+
+def list_sources(db_name: str) -> list[str]:
+    """Return a sorted, deduplicated list of source names stored in the collection."""
+    backend = _get_backend(db_name)
+    if backend == "json":
+        records = _json_load(db_name)
+        return sorted({r["metadata"].get("source", "") for r in records if r["metadata"].get("source", "")})
+    collection = _chroma_get_collection(db_name)
+    if collection.count() == 0:
+        return []
+    results = collection.get(include=["metadatas"])
+    return sorted({m.get("source", "") for m in results["metadatas"] if m.get("source", "")})
 
 
 def collection_stats(db_name: str) -> dict:
