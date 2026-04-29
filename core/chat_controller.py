@@ -66,7 +66,7 @@ def _memory_extraction_messages(history_text: str) -> list[dict]:
     ]
 
 
-def _parse_memory_candidates(raw_text: str) -> list[str]:
+def _parse_memory_candidates(raw_text: str, limit: int = 5) -> list[str]:
     text = raw_text.strip()
     candidates: list[str] = []
 
@@ -94,13 +94,13 @@ def _parse_memory_candidates(raw_text: str) -> list[str]:
                 candidates.append(value)
 
     if candidates:
-        return candidates[:5]
+        return candidates[:limit] if limit > 0 else candidates
 
     for line in text.splitlines():
         cleaned = line.strip().lstrip("-*0123456789. ").strip()
         if cleaned:
             candidates.append(cleaned)
-    return candidates[:5]
+    return candidates[:limit] if limit > 0 else candidates
 
 
 def _normalize_memory_text(value: str) -> str:
@@ -290,7 +290,7 @@ async def consolidate_memories(db_name: str, author_id: str = "") -> dict:
     ]
 
     raw = await _llm.chat(messages)
-    candidates = _parse_memory_candidates(raw)
+    candidates = _parse_memory_candidates(raw, limit=0)
     normalized = [_normalize_memory_text(c) for c in candidates if c.strip()]
     if not normalized:
         return {"before": len(all_memories), "after": 0, "entries": []}
