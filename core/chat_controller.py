@@ -46,7 +46,12 @@ def _default_db_config(db_name: str) -> dict:
     }
 
 
-def _memory_extraction_messages(history_text: str) -> list[dict]:
+def _memory_extraction_messages(history_text: str, existing_memories: list[str] | None = None) -> list[dict]:
+    existing_section = ""
+    if existing_memories:
+        existing_section = "\n\nAlready saved memories — do NOT re-extract these or anything semantically equivalent:\n" + "\n".join(
+            f"- {m}" for m in existing_memories
+        )
     prompt = (
         "You extract durable long-term memories from chat logs.\n"
         "Return JSON only.\n"
@@ -56,9 +61,10 @@ def _memory_extraction_messages(history_text: str) -> list[dict]:
         "- Prefer user preferences, profile facts, ongoing projects, decisions, promises, recurring workflows, and constraints.\n"
         "- Ignore small talk, one-off jokes, and temporary chatter.\n"
         "- Write each memory as a short standalone sentence in Japanese.\n"
-        "- At most 5 items.\n"
+        "- Return only NEW facts not already covered by existing memories.\n"
         "- Do not duplicate near-identical items.\n"
-        "- If nothing is worth saving, return []"
+        "- If nothing new is worth saving, return []"
+        + existing_section
     )
     return [
         {"role": "system", "content": prompt},
@@ -181,27 +187,27 @@ async def capture_memories_from_history(
 
     rule_based_candidates = _extract_rule_based_memories(cleaned_lines)
     history_text = _prepare_history_for_memory_extraction(cleaned_lines)
+
+    existing_items = list_memories(db_name, limit=200)
+    existing_contents = [item["content"] for item in existing_items]
+    existing_set = {_normalize_memory_text(c).lower() for c in existing_contents}
+
     raw = "[]"
     llm_error = ""
     try:
-        raw = await _llm.chat(_memory_extraction_messages(history_text))
+        raw = await _llm.chat(_memory_extraction_messages(history_text, existing_contents))
     except RuntimeError as exc:
         llm_error = str(exc)
         print(f"[MemoryCapture] LLM extraction skipped due to error: {exc}")
-    candidates = rule_based_candidates + _parse_memory_candidates(raw)
+    candidates = rule_based_candidates + _parse_memory_candidates(raw, limit=0)
     if not candidates:
         return {"saved": [], "error": llm_error}
-
-    existing = {
-        _normalize_memory_text(item["content"]).lower()
-        for item in list_memories(db_name, limit=100)
-    }
 
     saved: list[dict] = []
     for candidate in candidates:
         normalized = _normalize_memory_text(candidate)
         key = normalized.lower()
-        if not normalized or key in existing:
+        if not normalized or key in existing_set:
             continue
         memory_id = save_memory(
             db_name,
@@ -209,7 +215,7 @@ async def capture_memories_from_history(
             author_id=author_id,
             source=source,
         )
-        existing.add(key)
+        existing_set.add(key)
         saved.append(
             {
                 "id": memory_id,

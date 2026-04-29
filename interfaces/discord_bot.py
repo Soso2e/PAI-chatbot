@@ -416,12 +416,14 @@ class _RefreshConfirmView(discord.ui.View):
             self.stop()
             return
         lines = [f"`#{e['id']}` {e['content']}" for e in result["entries"]]
-        summary = (
+        header = (
             f"DB `{self._db_name}` の長期記憶を再構成しました。\n"
             f"{result['before']} 件 → {result['after']} 件\n\n"
-            + "\n".join(lines)
         )
-        await interaction.edit_original_response(content=summary)
+        body = header + "\n".join(lines)
+        if len(body) > 1900:
+            body = header + "\n".join(lines)[:1900 - len(header)] + "\n…（省略）"
+        await interaction.edit_original_response(content=body)
         self.stop()
 
     @discord.ui.button(label="キャンセル", style=discord.ButtonStyle.secondary)
@@ -479,16 +481,16 @@ async def memory_list(interaction: discord.Interaction):
         return
 
     db_name = _db(interaction.guild.id)
-    items = chat_controller.recent_memories(db_name, limit=5)
+    items = chat_controller.recent_memories(db_name, limit=20)
     if not items:
         await interaction.response.send_message("まだ保存された記憶はありません。", ephemeral=True)
         return
 
     lines = [f"`#{item['id']}` {item['content']}" for item in items]
-    await interaction.response.send_message(
-        "**最近の記憶**\n" + "\n".join(lines),
-        ephemeral=True,
-    )
+    body = "**長期記憶一覧**\n" + "\n".join(lines)
+    if len(body) > 1900:
+        body = body[:1900] + "\n…（省略）"
+    await interaction.response.send_message(body, ephemeral=True)
 
 
 @memory_group.command(name="trim", description="IDを指定して長期記憶を1件削除する")
