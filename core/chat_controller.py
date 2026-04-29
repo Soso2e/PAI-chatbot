@@ -344,3 +344,15 @@ def rag_set_backend(db_name: str, backend: str) -> None:
 def rag_get_status(db_name: str) -> dict:
     from core.rag_manager import collection_stats
     return collection_stats(db_name)
+
+
+def rag_ingest_text(db_name: str, text: str, source: str = "") -> int:
+    """Ingest plain text into the RAG index. Returns number of chunks stored."""
+    from core.rag_manager import ingest_text
+    return ingest_text(db_name, text, source=source)
+
+
+def rag_clear_documents(db_name: str) -> int:
+    """Delete all documents from the RAG index. Returns count of deleted chunks."""
+    from core.rag_manager import clear_collection
+    return clear_collection(db_name)
