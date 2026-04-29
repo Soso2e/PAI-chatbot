@@ -8,6 +8,7 @@ from discord.ext import commands
 
 from core import chat_controller
 from core.db_registry import get_guild_db
+from core.ingest_helpers import SUPPORTED_EXTENSIONS, fetch_url, read_bytes
 
 _VALID_RAG_BACKENDS = ("chroma", "json")
 
@@ -544,6 +545,63 @@ async def memory_clear(interaction: discord.Interaction):
     )
 
 
+class _IngestTextModal(discord.ui.Modal, title="テキストをRAGに追加"):
+    source = discord.ui.TextInput(
+        label="ソース名（タイトル）",
+        placeholder="例: 社内マニュアル2024",
+        max_length=100,
+        required=True,
+    )
+    content = discord.ui.TextInput(
+        label="テキスト内容",
+        style=discord.TextStyle.paragraph,
+        placeholder="ここにテキストを貼り付けてください（最大4000文字）",
+        max_length=4000,
+        required=True,
+    )
+
+    def __init__(self, db_name: str):
+        super().__init__()
+        self._db_name = db_name
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            count = await asyncio.to_thread(
+                chat_controller.rag_ingest_text,
+                self._db_name,
+                self.content.value,
+                self.source.value,
+            )
+        except Exception as exc:
+            await interaction.followup.send(f"インジェスト中にエラーが発生しました: {exc}", ephemeral=True)
+            return
+        await interaction.followup.send(
+            f"DB `{self._db_name}` に **{count}** チャンクを追加しました。\nソース: `{self.source.value}`",
+            ephemeral=True,
+        )
+
+
+class _RagClearConfirmView(discord.ui.View):
+    def __init__(self, db_name: str):
+        super().__init__(timeout=30)
+        self._db_name = db_name
+
+    @discord.ui.button(label="全削除する", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="削除中...", view=None)
+        count = await asyncio.to_thread(chat_controller.rag_clear_documents, self._db_name)
+        await interaction.edit_original_response(
+            content=f"DB `{self._db_name}` の RAG インデックスから **{count}** チャンクを削除しました。"
+        )
+        self.stop()
+
+    @discord.ui.button(label="キャンセル", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="キャンセルしました。", view=None)
+        self.stop()
+
+
 @rag_group.command(name="on", description="現在のDBのRAGを有効にする")
 async def rag_on(interaction: discord.Interaction):
     if not _require_guild(interaction):
@@ -619,6 +677,113 @@ async def rag_backend(interaction: discord.Interaction, backend: str):
     await interaction.response.send_message(
         f"DB `{db_name}` のベクターDBバックエンドを `{backend}` に切り替えました。\n"
         "既存のインデックスはそのまま残ります。再インデックスが必要な場合は `scripts/ingest.py` を使用してください。",
+        ephemeral=True,
+    )
+
+
+@rag_group.command(name="file", description="ファイルをアップロードしてRAGに追加する（.txt/.md/.pdf/.json、最大10MB）")
+@app_commands.describe(
+    file="追加するドキュメントファイル",
+    source="ソース名（省略時はファイル名）",
+)
+async def rag_file(interaction: discord.Interaction, file: discord.Attachment, source: str = ""):
+    if not _require_guild(interaction):
+        await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
+        return
+    if not _has_manage_guild(interaction):
+        await _send_permission_error(interaction)
+        return
+
+    suffix = "." + file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
+    if suffix not in SUPPORTED_EXTENSIONS:
+        await interaction.response.send_message(
+            f"対応していないファイル形式です: `{suffix}`\n対応形式: {', '.join(sorted(SUPPORTED_EXTENSIONS))}",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        data = await file.read()
+        text = await asyncio.to_thread(read_bytes, data, file.filename)
+        db_name = _db(interaction.guild.id)
+        label = source or file.filename
+        count = await asyncio.to_thread(chat_controller.rag_ingest_text, db_name, text, label)
+    except Exception as exc:
+        await interaction.followup.send(f"インジェスト中にエラーが発生しました: {exc}", ephemeral=True)
+        return
+
+    await interaction.followup.send(
+        f"DB `{db_name}` に `{file.filename}` を追加しました。\nチャンク数: **{count}**",
+        ephemeral=True,
+    )
+
+
+@rag_group.command(name="url", description="URLからコンテンツを取得してRAGに追加する（Google Docs/Sheets/Webページ）")
+@app_commands.describe(
+    url="取得するURL（Google Docs共有リンクなど）",
+    source="ソース名（省略時はURL）",
+)
+async def rag_url(interaction: discord.Interaction, url: str, source: str = ""):
+    if not _require_guild(interaction):
+        await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
+        return
+    if not _has_manage_guild(interaction):
+        await _send_permission_error(interaction)
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        text = await asyncio.to_thread(fetch_url, url)
+        db_name = _db(interaction.guild.id)
+        label = source or url
+        count = await asyncio.to_thread(chat_controller.rag_ingest_text, db_name, text, label)
+    except RuntimeError as exc:
+        await interaction.followup.send(f"URL取得に失敗しました: {exc}", ephemeral=True)
+        return
+    except Exception as exc:
+        await interaction.followup.send(f"インジェスト中にエラーが発生しました: {exc}", ephemeral=True)
+        return
+
+    await interaction.followup.send(
+        f"DB `{db_name}` に URL のコンテンツを追加しました。\nチャンク数: **{count}**\nソース: `{label}`",
+        ephemeral=True,
+    )
+
+
+@rag_group.command(name="paste", description="テキストを直接貼り付けてRAGに追加する（最大4000文字）")
+async def rag_paste(interaction: discord.Interaction):
+    if not _require_guild(interaction):
+        await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
+        return
+    if not _has_manage_guild(interaction):
+        await _send_permission_error(interaction)
+        return
+
+    db_name = _db(interaction.guild.id)
+    await interaction.response.send_modal(_IngestTextModal(db_name))
+
+
+@rag_group.command(name="clear", description="現在のDBのRAGインデックスを全削除する")
+async def rag_clear(interaction: discord.Interaction):
+    if not _require_guild(interaction):
+        await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
+        return
+    if not _has_manage_guild(interaction):
+        await _send_permission_error(interaction)
+        return
+
+    db_name = _db(interaction.guild.id)
+    stats = chat_controller.rag_get_status(db_name)
+    count = stats.get("document_count", 0)
+    if count == 0:
+        await interaction.response.send_message("RAGインデックスは空です。削除するものがありません。", ephemeral=True)
+        return
+
+    view = _RagClearConfirmView(db_name)
+    await interaction.response.send_message(
+        f"DB `{db_name}` の RAG インデックスにある **{count}** チャンクを全削除します。よろしいですか？",
+        view=view,
         ephemeral=True,
     )
 

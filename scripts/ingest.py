@@ -16,99 +16,32 @@ URL sources: Google Docs, Google Sheets (公開設定のもの), 一般Webペー
 """
 
 import argparse
-import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core import rag_manager
-
-_SUPPORTED = {".txt", ".md", ".pdf", ".json"}
-
-_GDOCS_RE = re.compile(r"https://docs\.google\.com/document/d/([^/?#]+)")
-_GSHEETS_RE = re.compile(r"https://docs\.google\.com/spreadsheets/d/([^/?#]+)")
-
-
-def _fetch_url(url: str) -> str | None:
-    import httpx
-
-    m = _GDOCS_RE.match(url)
-    if m:
-        export_url = f"https://docs.google.com/document/d/{m.group(1)}/export?format=txt"
-        try:
-            resp = httpx.get(export_url, follow_redirects=True, timeout=30)
-            resp.raise_for_status()
-            return resp.text
-        except httpx.HTTPStatusError as e:
-            print(f"  [error] Google Docs fetch failed ({e.response.status_code}). ドキュメントが「リンクを知っている全員」に公開されているか確認してください。")
-            return None
-
-    m = _GSHEETS_RE.match(url)
-    if m:
-        export_url = f"https://docs.google.com/spreadsheets/d/{m.group(1)}/export?format=csv"
-        try:
-            resp = httpx.get(export_url, follow_redirects=True, timeout=30)
-            resp.raise_for_status()
-            return resp.text
-        except httpx.HTTPStatusError as e:
-            print(f"  [error] Google Sheets fetch failed ({e.response.status_code}). スプレッドシートが「リンクを知っている全員」に公開されているか確認してください。")
-            return None
-
-    # General web page — requires beautifulsoup4
-    try:
-        from bs4 import BeautifulSoup
-    except ImportError:
-        print("  [skip] beautifulsoup4 not installed — run: pip install beautifulsoup4")
-        return None
-
-    try:
-        resp = httpx.get(url, follow_redirects=True, timeout=30)
-        resp.raise_for_status()
-    except httpx.HTTPStatusError as e:
-        print(f"  [error] URL fetch failed ({e.response.status_code}): {url}")
-        return None
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-    for tag in soup(["script", "style", "nav", "footer", "header"]):
-        tag.decompose()
-    return soup.get_text(separator="\n", strip=True)
+from core.ingest_helpers import SUPPORTED_EXTENSIONS, fetch_url, read_file
 
 
 def _ingest_url(db_name: str, url: str, source: str = "") -> None:
-    text = _fetch_url(url)
-    if text is None:
+    try:
+        text = fetch_url(url)
+    except RuntimeError as e:
+        print(f"  [error] {e}")
         return
     label = source or url
     count = rag_manager.ingest_text(db_name, text, source=label)
     print(f"  [ok] {url} → {count} chunks stored")
 
 
-def _read_file(path: Path) -> str | None:
-    suffix = path.suffix.lower()
-    if suffix in (".txt", ".md"):
-        return path.read_text(encoding="utf-8")
-    if suffix == ".pdf":
-        try:
-            from pdfminer.high_level import extract_text
-            return extract_text(str(path))
-        except ImportError:
-            print(f"  [skip] pdfminer not installed — run: pip install pdfminer.six")
-            return None
-    if suffix == ".json":
-        import json
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(data, list):
-            return "\n".join(str(item) for item in data)
-        if isinstance(data, dict):
-            return "\n".join(f"{k}: {v}" for k, v in data.items())
-        return str(data)
-    print(f"  [skip] Unsupported format: {suffix}")
-    return None
-
-
 def _ingest_file(db_name: str, path: Path, source: str = "") -> None:
-    text = _read_file(path)
+    try:
+        text = read_file(path)
+    except RuntimeError as e:
+        print(f"  [skip] {e}")
+        return
     if text is None:
         return
     label = source or str(path)
@@ -135,6 +68,7 @@ def main() -> None:
         stats = rag_manager.collection_stats(args.db)
         print(f"DB           : {args.db}")
         print(f"RAG enabled  : {stats['enabled']}")
+        print(f"Backend      : {stats.get('vector_backend', 'chroma')}")
         print(f"Model        : {stats['embedding_model']}")
         print(f"Chunks stored: {stats['document_count']}")
         return
@@ -156,7 +90,7 @@ def main() -> None:
         if not args.dir.exists():
             print(f"Error: directory not found: {args.dir}", file=sys.stderr)
             sys.exit(1)
-        files = sorted(f for f in args.dir.rglob("*") if f.suffix.lower() in _SUPPORTED)
+        files = sorted(f for f in args.dir.rglob("*") if f.suffix.lower() in SUPPORTED_EXTENSIONS)
         print(f"Ingesting {len(files)} file(s) from '{args.dir}' → DB '{args.db}'")
         for f in files:
             _ingest_file(args.db, f, args.source)
