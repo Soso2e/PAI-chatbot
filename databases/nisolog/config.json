@@ -11,6 +11,7 @@
   ],
   "rag": {
     "enabled": false,
+    "vector_backend": "chroma",
     "embedding_model": "bge-m3",
     "chunk_size": 500,
     "chunk_overlap": 50,
