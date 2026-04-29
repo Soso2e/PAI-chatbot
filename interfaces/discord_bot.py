@@ -491,9 +491,9 @@ async def memory_list(interaction: discord.Interaction):
     )
 
 
-@memory_group.command(name="delete", description="IDを指定して長期記憶を1件削除する")
+@memory_group.command(name="trim", description="IDを指定して長期記憶を1件削除する")
 @app_commands.describe(memory_id="削除する記憶のID（/memory list で確認できます）")
-async def memory_delete(interaction: discord.Interaction, memory_id: int):
+async def memory_trim(interaction: discord.Interaction, memory_id: int):
     if not _require_guild(interaction):
         await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
         return
@@ -807,7 +807,7 @@ async def rag_sources(interaction: discord.Interaction):
     )
 
 
-class _RagDeleteSourceConfirmView(discord.ui.View):
+class _RagTrimConfirmView(discord.ui.View):
     def __init__(self, db_name: str, source: str):
         super().__init__(timeout=30)
         self._db_name = db_name
@@ -830,9 +830,36 @@ class _RagDeleteSourceConfirmView(discord.ui.View):
         self.stop()
 
 
-@rag_group.command(name="delete", description="指定したソース名のRAGチャンクを削除する")
-@app_commands.describe(source="削除するソース名（/rag sources で確認できます）")
-async def rag_delete(interaction: discord.Interaction, source: str):
+class _RagTrimSelectView(discord.ui.View):
+    def __init__(self, db_name: str, sources: list[str]):
+        super().__init__(timeout=60)
+        self._db_name = db_name
+        # Discord Select は最大25件
+        options = [
+            discord.SelectOption(label=s[:100], value=s[:100])
+            for s in sources[:25]
+        ]
+        select = discord.ui.Select(
+            placeholder="削除するソースを選んでください",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+        select.callback = self._on_select
+        self.add_item(select)
+
+    async def _on_select(self, interaction: discord.Interaction):
+        source = interaction.data["values"][0]
+        confirm_view = _RagTrimConfirmView(self._db_name, source)
+        await interaction.response.edit_message(
+            content=f"ソース `{source}` のチャンクを削除します。よろしいですか？",
+            view=confirm_view,
+        )
+        self.stop()
+
+
+@rag_group.command(name="trim", description="プルダウンからソースを選んでRAGチャンクを削除する")
+async def rag_trim(interaction: discord.Interaction):
     if not _require_guild(interaction):
         await interaction.response.send_message("このコマンドはDiscordサーバー内でのみ使用できます。", ephemeral=True)
         return
@@ -842,16 +869,14 @@ async def rag_delete(interaction: discord.Interaction, source: str):
 
     db_name = _db(interaction.guild.id)
     sources = chat_controller.rag_list_sources(db_name)
-    if source not in sources:
-        await interaction.response.send_message(
-            f"ソース `{source}` が見つかりません。`/rag sources` で登録済みのソースを確認してください。",
-            ephemeral=True,
-        )
+    if not sources:
+        await interaction.response.send_message("RAGインデックスにソースがありません。", ephemeral=True)
         return
 
-    view = _RagDeleteSourceConfirmView(db_name, source)
+    view = _RagTrimSelectView(db_name, sources)
+    note = f"（25件を超えるため先頭25件を表示しています）" if len(sources) > 25 else ""
     await interaction.response.send_message(
-        f"ソース `{source}` のチャンクを削除します。よろしいですか？",
+        f"DB `{db_name}` から削除するソースを選んでください。{note}",
         view=view,
         ephemeral=True,
     )
