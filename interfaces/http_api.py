@@ -37,6 +37,11 @@ class SwitchRequest(BaseModel):
     db_name: str
 
 
+class RagDeleteSourceRequest(BaseModel):
+    db_name: str
+    source: str
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(_verify_key)])
@@ -62,6 +67,33 @@ async def db_switch(req: SwitchRequest):
     if req.db_name not in chat_controller.available_dbs():
         raise HTTPException(status_code=400, detail=f"DB '{req.db_name}' not found")
     return {"session_id": req.session_id, "db_name": req.db_name}
+
+
+@app.get("/rag/sources", dependencies=[Depends(_verify_key)])
+async def rag_sources(db_name: str = "general"):
+    if db_name not in chat_controller.available_dbs():
+        raise HTTPException(status_code=400, detail=f"DB '{db_name}' not found")
+    return {"db_name": db_name, "sources": chat_controller.rag_list_sources(db_name)}
+
+
+@app.post("/rag/delete-source", dependencies=[Depends(_verify_key)])
+async def rag_delete_source(req: RagDeleteSourceRequest):
+    if req.db_name not in chat_controller.available_dbs():
+        raise HTTPException(status_code=400, detail=f"DB '{req.db_name}' not found")
+    count = chat_controller.rag_delete_by_source(req.db_name, req.source)
+    if count == 0:
+        raise HTTPException(status_code=404, detail=f"Source '{req.source}' not found in '{req.db_name}'")
+    return {"db_name": req.db_name, "source": req.source, "deleted_chunks": count}
+
+
+@app.delete("/memory/{db_name}/{memory_id}", dependencies=[Depends(_verify_key)])
+async def memory_delete(db_name: str, memory_id: int):
+    if db_name not in chat_controller.available_dbs():
+        raise HTTPException(status_code=400, detail=f"DB '{db_name}' not found")
+    deleted = chat_controller.memory_delete(db_name, memory_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Memory #{memory_id} not found in '{db_name}'")
+    return {"db_name": db_name, "memory_id": memory_id, "deleted": True}
 
 
 @app.get("/status", dependencies=[Depends(_verify_key)])

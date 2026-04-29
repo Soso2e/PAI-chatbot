@@ -7,6 +7,7 @@ from core.db_registry import bind_guild_db, register_db, verify_db_password
 from core.llm_client import LLMClient
 from core.memory_manager import (
     clear_history,
+    delete_memory,
     get_all_memories,
     init_db,
     list_memories,
@@ -356,3 +357,20 @@ def rag_clear_documents(db_name: str) -> int:
     """Delete all documents from the RAG index. Returns count of deleted chunks."""
     from core.rag_manager import clear_collection
     return clear_collection(db_name)
+
+
+def rag_delete_by_source(db_name: str, source: str) -> int:
+    """Delete RAG chunks matching the given source name. Returns count of deleted chunks."""
+    from core.rag_manager import delete_by_source
+    return delete_by_source(db_name, source)
+
+
+def rag_list_sources(db_name: str) -> list[str]:
+    """Return sorted list of source names in the RAG index."""
+    from core.rag_manager import list_sources
+    return list_sources(db_name)
+
+
+def memory_delete(db_name: str, memory_id: int) -> bool:
+    """Delete a single memory entry by ID. Returns True if deleted."""
+    return delete_memory(db_name, memory_id)
