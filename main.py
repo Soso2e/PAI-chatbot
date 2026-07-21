@@ -36,8 +36,11 @@ def _run_http(host: str, port: int):
 # ── Discord Bot (asyncio, 別スレッド) ─────────────────────────────────────────
 
 def _run_discord(token: str):
-    from interfaces.discord_bot import bot
-    bot.run(token)
+    from core.discord_pdf_sync import install as install_discord_pdf_sync
+    from interfaces import discord_bot
+
+    install_discord_pdf_sync(discord_bot)
+    discord_bot.bot.run(token)
 
 
 # ── Slack Bot (asyncio) ───────────────────────────────────────────────────────
